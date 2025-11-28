@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { MessageSquare } from "lucide-react";
+import { generateKeyPair, storeIdentityPrivateKey, getIdentityPrivateKey } from "@/lib/crypto";
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -40,14 +41,36 @@ const Auth = () => {
 
     try {
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({
+        const { error, data } = await supabase.auth.signInWithPassword({
           email,
           password,
         });
         if (error) throw error;
+        
+        // Check if user has encryption keys, generate if not
+        const existingPrivateKey = getIdentityPrivateKey();
+        if (!existingPrivateKey && data.user) {
+          // Generate new key pair for existing user without keys
+          const keyPair = generateKeyPair();
+          storeIdentityPrivateKey(keyPair.privateKey);
+          
+          // Upload public key to profile (will work after migration)
+          try {
+            await supabase
+              .from('profiles')
+              .update({ public_key: keyPair.publicKey } as any)
+              .eq('id', data.user.id);
+          } catch (e) {
+            console.error('Could not update public key:', e);
+          }
+        }
+        
         toast.success("Welcome back!");
       } else {
-        const { error } = await supabase.auth.signUp({
+        // Generate encryption keys for new user
+        const keyPair = generateKeyPair();
+        
+        const { error, data } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -58,7 +81,25 @@ const Auth = () => {
           },
         });
         if (error) throw error;
-        toast.success("Account created successfully!");
+        
+        // Store private key locally (never sent to server)
+        if (data.user) {
+          storeIdentityPrivateKey(keyPair.privateKey);
+          
+          // Upload public key to profile (will work after migration)
+          setTimeout(async () => {
+            try {
+              await supabase
+                .from('profiles')
+                .update({ public_key: keyPair.publicKey } as any)
+                .eq('id', data.user!.id);
+            } catch (e) {
+              console.error('Could not update public key:', e);
+            }
+          }, 1000);
+        }
+        
+        toast.success("Account created with end-to-end encryption!");
       }
     } catch (error: any) {
       toast.error(error.message);

@@ -6,6 +6,7 @@ import { LogOut } from "lucide-react";
 import ConversationList from "@/components/ConversationList";
 import ChatWindow from "@/components/ChatWindow";
 import { toast } from "sonner";
+import { clearAllKeys } from "@/lib/crypto";
 
 const Index = () => {
   const [user, setUser] = useState<any>(null);
@@ -35,6 +36,7 @@ const Index = () => {
   }, [navigate]);
 
   const handleSignOut = async () => {
+    clearAllKeys(); // Clear encryption keys for security
     await supabase.auth.signOut();
     toast.success("Signed out successfully");
   };

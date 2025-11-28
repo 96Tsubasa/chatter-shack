@@ -5,6 +5,14 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Send, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
+import { 
+  encryptMessage, 
+  decryptMessage, 
+  deriveConversationKeyPair,
+  getIdentityPrivateKey,
+  getEphemeralPrivateKey,
+  type EncryptedMessage 
+} from "@/lib/crypto";
 
 interface ChatWindowProps {
   conversationId: string | null;
@@ -18,18 +26,25 @@ interface Message {
   created_at: string;
   profiles: {
     username: string;
+    public_key?: string;
   };
 }
 
+interface DecryptedMessage extends Message {
+  decryptedContent?: string;
+}
+
 const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
+  const [recipientPublicKey, setRecipientPublicKey] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!conversationId) return;
 
     loadMessages();
+    loadRecipientPublicKey();
 
     const channel = supabase
       .channel(`conversation-${conversationId}`)
@@ -52,6 +67,26 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     };
   }, [conversationId]);
 
+  const loadRecipientPublicKey = async () => {
+    if (!conversationId) return;
+
+    try {
+      // Get other participant's public key
+      const { data: participants } = await supabase
+        .from("conversation_participants")
+        .select("user_id, profiles!conversation_participants_user_id_fkey(public_key)")
+        .eq("conversation_id", conversationId)
+        .neq("user_id", currentUserId);
+
+      if (participants && participants[0]) {
+        const profile = participants[0].profiles as any;
+        setRecipientPublicKey(profile?.public_key || null);
+      }
+    } catch (error) {
+      console.error("Error loading recipient public key:", error);
+    }
+  };
+
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
@@ -66,13 +101,54 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         content,
         sender_id,
         created_at,
-        profiles!messages_sender_id_fkey(username)
+        profiles!messages_sender_id_fkey(username, public_key)
       `)
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true });
 
     if (data) {
-      setMessages(data as Message[]);
+      // Decrypt messages
+      const decryptedMessages = await Promise.all(
+        data.map(async (msg: any) => {
+          const decryptedMessage = { ...msg } as DecryptedMessage;
+          
+          // Only decrypt if we're the recipient
+          if (msg.sender_id !== currentUserId) {
+            try {
+              const ephemeralPrivateKey = getEphemeralPrivateKey(conversationId);
+              const senderPublicKey = msg.profiles?.public_key;
+              
+              if (ephemeralPrivateKey && senderPublicKey) {
+                // Try to parse as encrypted message
+                try {
+                  const encryptedData: EncryptedMessage = JSON.parse(msg.content);
+                  const decrypted = decryptMessage(
+                    encryptedData,
+                    senderPublicKey,
+                    ephemeralPrivateKey
+                  );
+                  decryptedMessage.decryptedContent = decrypted || msg.content;
+                } catch {
+                  // Not encrypted JSON, display as-is
+                  decryptedMessage.decryptedContent = msg.content;
+                }
+              } else {
+                decryptedMessage.decryptedContent = msg.content;
+              }
+            } catch (error) {
+              console.error("Error decrypting message:", error);
+              decryptedMessage.decryptedContent = "[Encrypted message - unable to decrypt]";
+            }
+          } else {
+            // Our own message, display as-is
+            decryptedMessage.decryptedContent = msg.content;
+          }
+          
+          return decryptedMessage;
+        })
+      );
+      
+      setMessages(decryptedMessages as DecryptedMessage[]);
     }
   };
 
@@ -86,10 +162,36 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     e.preventDefault();
     if (!newMessage.trim() || !conversationId) return;
 
+    let contentToSend = newMessage.trim();
+
+    // Encrypt message if recipient's public key is available
+    if (recipientPublicKey) {
+      try {
+        // Get or create ephemeral key for this conversation
+        const ephemeralKeyPair = deriveConversationKeyPair(conversationId);
+        
+        // Encrypt the message
+        const encrypted = encryptMessage(
+          newMessage.trim(),
+          recipientPublicKey,
+          ephemeralKeyPair.privateKey
+        );
+        
+        contentToSend = JSON.stringify(encrypted);
+      } catch (error) {
+        console.error("Encryption error:", error);
+        toast.error("Failed to encrypt message");
+        return;
+      }
+    } else {
+      toast.error("Recipient's encryption key not available");
+      return;
+    }
+
     const { error } = await supabase.from("messages").insert({
       conversation_id: conversationId,
       sender_id: currentUserId,
-      content: newMessage.trim(),
+      content: contentToSend,
     });
 
     if (error) {
@@ -127,7 +229,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                       : "bg-message-received text-message-received-foreground rounded-bl-sm"
                   }`}
                 >
-                  <p className="break-words">{message.content}</p>
+                  <p className="break-words">{message.decryptedContent || message.content}</p>
                   <p className={`text-xs mt-1 ${isSent ? "text-message-sent-foreground/70" : "text-message-received-foreground/70"}`}>
                     {new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </p>

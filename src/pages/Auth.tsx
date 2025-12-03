@@ -4,10 +4,22 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { toast } from "sonner";
 import { MessageSquare } from "lucide-react";
-import { generateKeyPair, storeIdentityPrivateKey, getIdentityPrivateKey } from "@/lib/crypto";
+import naclUtil from "tweetnacl-util";
+import {
+  generateHybridKeyPair,
+  storeHybridPrivateKeys,
+  getIdentityPrivateKey,
+  getPqcPrivateKey,
+} from "@/lib/crypto";
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -19,14 +31,18 @@ const Auth = () => {
 
   useEffect(() => {
     const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (session) {
         navigate("/");
       }
     };
     checkUser();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (session) {
         navigate("/");
       }
@@ -46,30 +62,40 @@ const Auth = () => {
           password,
         });
         if (error) throw error;
-        
-        // Check if user has encryption keys, generate if not
-        const existingPrivateKey = getIdentityPrivateKey();
-        if (!existingPrivateKey && data.user) {
-          // Generate new key pair for existing user without keys
-          const keyPair = generateKeyPair();
-          storeIdentityPrivateKey(keyPair.privateKey);
-          
-          // Upload public key to profile (will work after migration)
-          try {
-            await supabase
-              .from('profiles')
-              .update({ public_key: keyPair.publicKey } as any)
-              .eq('id', data.user.id);
-          } catch (e) {
-            console.error('Could not update public key:', e);
-          }
+
+        // Check & generate hybrid keys nếu chưa có
+        let classicalPriv = getIdentityPrivateKey();
+        let pqcPriv = getPqcPrivateKey();
+        if (!classicalPriv || !pqcPriv) {
+          const keys = await generateHybridKeyPair();
+          classicalPriv = keys.classical.privateKey;
+          pqcPriv = keys.pqc.privateKey;
+          storeHybridPrivateKeys(classicalPriv, pqcPriv);
+
+          // Upload public keys lên profiles
+          await supabase
+            .from("profiles")
+            .update({
+              public_key: keys.classical.publicKey,
+              pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey), // Thêm import naclUtil nếu cần
+            })
+            .eq("id", data.user.id);
         }
-        
-        toast.success("Welcome back!");
+
+        toast.success("Welcome back with quantum-safe encryption!");
       } else {
-        // Generate encryption keys for new user
-        const keyPair = generateKeyPair();
-        
+        // SIGN UP
+        console.log("📝 Attempting sign up...");
+        console.log("Email:", email);
+        console.log("Username:", username || email.split("@")[0]);
+
+        // Generate keys FIRST
+        console.log("🔑 Generating hybrid keys...");
+        const keys = await generateHybridKeyPair();
+        console.log("✅ Keys generated successfully");
+
+        // Sign up
+        console.log("📤 Creating auth user...");
         const { error, data } = await supabase.auth.signUp({
           email,
           password,
@@ -80,27 +106,80 @@ const Auth = () => {
             emailRedirectTo: `${window.location.origin}/`,
           },
         });
-        if (error) throw error;
-        
-        // Store private key locally (never sent to server)
-        if (data.user) {
-          storeIdentityPrivateKey(keyPair.privateKey);
-          
-          // Upload public key to profile (will work after migration)
-          setTimeout(async () => {
-            try {
-              await supabase
-                .from('profiles')
-                .update({ public_key: keyPair.publicKey } as any)
-                .eq('id', data.user!.id);
-            } catch (e) {
-              console.error('Could not update public key:', e);
-            }
-          }, 1000);
+
+        if (error) {
+          console.error("❌ Sign up error:", error);
+          throw error;
         }
-        
-        toast.success("Account created with end-to-end encryption!");
+
+        console.log("✅ Auth user created:", data.user?.id);
+
+        if (data.user) {
+          // Store private keys locally
+          console.log("💾 Storing private keys locally...");
+          storeHybridPrivateKeys(
+            keys.classical.privateKey,
+            keys.pqc.privateKey
+          );
+          console.log("✅ Private keys stored");
+
+          // Check if profile exists (trigger should auto-create it)
+          console.log("🔍 Checking if profile was auto-created...");
+
+          // Wait a bit for trigger to execute
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+
+          const { data: existingProfile, error: checkError } = await supabase
+            .from("profiles")
+            .select("id")
+            .eq("id", data.user.id)
+            .single();
+
+          if (checkError) {
+            console.error("❌ Profile check error:", checkError);
+
+            // Try to create profile manually if trigger failed
+            console.log("🔧 Attempting manual profile creation...");
+            const { error: insertError } = await supabase
+              .from("profiles")
+              .insert({
+                id: data.user.id,
+                username: username || email.split("@")[0],
+                public_key: keys.classical.publicKey,
+                pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey),
+              });
+
+            if (insertError) {
+              console.error("❌ Manual profile creation failed:", insertError);
+              throw new Error(
+                `Failed to create profile: ${insertError.message}`
+              );
+            }
+            console.log("✅ Profile created manually");
+          } else {
+            console.log("✅ Profile exists, updating keys...");
+            // Profile exists, just update keys
+            const { error: updateError } = await supabase
+              .from("profiles")
+              .update({
+                public_key: keys.classical.publicKey,
+                pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey),
+              })
+              .eq("id", data.user.id);
+
+            if (updateError) {
+              console.error("❌ Profile update error:", updateError);
+              throw updateError;
+            }
+            console.log("✅ Profile keys updated");
+          }
+
+          toast.success("Account created with Hybrid Post-Quantum E2EE!");
+        }
       }
+
+      console.log("🎉 Authentication flow completed successfully");
+      navigate("/");
     } catch (error: any) {
       toast.error(error.message);
     } finally {
@@ -121,7 +200,9 @@ const Auth = () => {
             {isLogin ? "Welcome back" : "Create an account"}
           </CardTitle>
           <CardDescription>
-            {isLogin ? "Sign in to continue messaging" : "Sign up to start messaging"}
+            {isLogin
+              ? "Sign in to continue messaging"
+              : "Sign up to start quantum-safe messaging"}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -170,7 +251,9 @@ const Auth = () => {
               onClick={() => setIsLogin(!isLogin)}
               className="text-primary hover:underline"
             >
-              {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+              {isLogin
+                ? "Don't have an account? Sign up"
+                : "Already have an account? Sign in"}
             </button>
           </div>
         </CardContent>

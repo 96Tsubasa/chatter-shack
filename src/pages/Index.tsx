@@ -35,6 +35,7 @@ const Index = () => {
   const [editedUsername, setEditedUsername] = useState("");
   const [editedAvatarUrl, setEditedAvatarUrl] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -124,6 +125,64 @@ const Index = () => {
     }
   };
 
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    // Validate file type
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please upload an image file");
+      return;
+    }
+
+    // Validate file size (max 2MB)
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image size must be less than 2MB");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      // Delete old avatar if exists
+      if (profile?.avatar_url && profile.avatar_url.includes("supabase")) {
+        const oldPath = profile.avatar_url.split("/avatars/")[1];
+        if (oldPath) {
+          await supabase.storage.from("avatars").remove([oldPath]);
+        }
+      }
+
+      // Upload new avatar
+      const fileExt = file.name.split(".").pop();
+      const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(fileName, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+      if (uploadError) {
+        console.error("Upload error:", uploadError);
+        toast.error("Failed to upload avatar");
+        return;
+      }
+
+      // Get public URL
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("avatars").getPublicUrl(uploadData.path);
+
+      setEditedAvatarUrl(publicUrl);
+      toast.success("Avatar uploaded successfully");
+    } catch (error) {
+      console.error("Unexpected upload error:", error);
+      toast.error("Failed to upload avatar");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   if (!user) return null;
 
   return (
@@ -193,13 +252,28 @@ const Index = () => {
           </DialogHeader>
           <div className="grid gap-4 py-4">
             {/* Avatar Preview */}
-            <div className="flex justify-center">
+            <div className="flex flex-col items-center gap-2">
               <Avatar className="h-24 w-24">
                 <AvatarImage src={editedAvatarUrl} alt={editedUsername} />
                 <AvatarFallback className="text-2xl">
                   {editedUsername?.[0]?.toUpperCase() || "U"}
                 </AvatarFallback>
               </Avatar>
+
+              {/* Upload Button */}
+              <Label htmlFor="avatar-upload" className="cursor-pointer">
+                <div className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors">
+                  {isUploading ? "Uploading..." : "Upload Photo"}
+                </div>
+                <Input
+                  id="avatar-upload"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarUpload}
+                  disabled={isUploading}
+                  className="hidden"
+                />
+              </Label>
             </div>
 
             {/* Username */}
@@ -212,31 +286,20 @@ const Index = () => {
                 placeholder="Enter username"
               />
             </div>
-
-            {/* Avatar URL */}
-            <div className="grid gap-2">
-              <Label htmlFor="avatar">Avatar URL</Label>
-              <Input
-                id="avatar"
-                value={editedAvatarUrl}
-                onChange={(e) => setEditedAvatarUrl(e.target.value)}
-                placeholder="https://example.com/avatar.jpg"
-              />
-              <p className="text-xs text-muted-foreground">
-                Enter a direct link to your avatar image
-              </p>
-            </div>
           </div>
 
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
               onClick={() => setProfileDialogOpen(false)}
-              disabled={isSaving}
+              disabled={isSaving || isUploading}
             >
               Cancel
             </Button>
-            <Button onClick={handleSaveProfile} disabled={isSaving}>
+            <Button
+              onClick={handleSaveProfile}
+              disabled={isSaving || isUploading}
+            >
               {isSaving ? "Saving..." : "Save Changes"}
             </Button>
           </div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { MessageSquare, Plus } from "lucide-react";
 import {
   Dialog,
@@ -25,6 +25,7 @@ interface ConversationWithUser {
   otherUser: {
     id: string;
     username: string;
+    avatar_url?: string; // ✅ Add avatar
   };
   lastMessage?: string;
 }
@@ -124,6 +125,7 @@ const ConversationList = ({
             otherUser: {
               id: profile?.id || "unknown",
               username: profile?.username || "Unknown User",
+              avatar_url: profile?.avatar_url || undefined,
             },
           };
         }
@@ -141,7 +143,7 @@ const ConversationList = ({
 
     const { data } = await supabase
       .from("profiles")
-      .select("id, username")
+      .select("id, username, avatar_url")
       .ilike("username", `%${searchUsername}%`)
       .neq("id", currentUserId)
       .limit(5);
@@ -256,6 +258,7 @@ const ConversationList = ({
                     className="w-full p-3 hover:bg-secondary rounded-lg flex items-center gap-3 transition-colors"
                   >
                     <Avatar>
+                      <AvatarImage src={user.avatar_url} alt={user.username} />
                       <AvatarFallback>
                         {user.username?.[0]?.toUpperCase() || "?"}
                       </AvatarFallback>
@@ -289,6 +292,10 @@ const ConversationList = ({
               }`}
             >
               <Avatar>
+                <AvatarImage
+                  src={conv.otherUser.avatar_url}
+                  alt={conv.otherUser.username}
+                />
                 <AvatarFallback>
                   {conv.otherUser.username[0]?.toUpperCase() || "?"}
                 </AvatarFallback>

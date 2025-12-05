@@ -57,29 +57,77 @@ const Auth = () => {
 
     try {
       if (isLogin) {
+        console.log("🔐 Attempting login...");
         const { error, data } = await supabase.auth.signInWithPassword({
           email,
           password,
         });
-        if (error) throw error;
 
-        // Check & generate hybrid keys nếu chưa có
+        if (error) {
+          console.error("❌ Login error:", error);
+          throw error;
+        }
+
+        console.log("✅ Login successful, checking keys...");
+
+        // ✅ CRITICAL FIX: Fetch keys from database first
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("public_key, pqc_public_key")
+          .eq("id", data.user.id)
+          .single();
+
+        if (profileError) {
+          console.error("❌ Error fetching profile:", profileError);
+          throw profileError;
+        }
+
+        // Check local keys
         let classicalPriv = getIdentityPrivateKey();
         let pqcPriv = getPqcPrivateKey();
-        if (!classicalPriv || !pqcPriv) {
+
+        // ✅ NEW LOGIC: Only generate if BOTH local AND database are missing
+        if (
+          (!classicalPriv || !pqcPriv) &&
+          (!profileData?.public_key || !profileData?.pqc_public_key)
+        ) {
+          console.log("🔑 No keys found anywhere, generating new keys...");
           const keys = await generateHybridKeyPair();
           classicalPriv = keys.classical.privateKey;
           pqcPriv = keys.pqc.privateKey;
           storeHybridPrivateKeys(classicalPriv, pqcPriv);
 
-          // Upload public keys lên profiles
-          await supabase
+          console.log("📤 Uploading NEW public keys to profile...");
+          const { error: updateError } = await supabase
             .from("profiles")
             .update({
               public_key: keys.classical.publicKey,
-              pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey), // Thêm import naclUtil nếu cần
+              pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey),
             })
             .eq("id", data.user.id);
+
+          if (updateError) {
+            console.error("❌ Error updating profile keys:", updateError);
+            throw updateError;
+          }
+          console.log("✅ Keys uploaded successfully");
+        } else if (!classicalPriv || !pqcPriv) {
+          // ❌ CRITICAL ERROR: Local keys missing but DB has keys
+          console.error(
+            "❌ CRITICAL: Keys exist in database but not in localStorage!"
+          );
+          console.error(
+            "This means you logged in from a different device/browser."
+          );
+          console.error(
+            "Cannot recover - you need to use the original device or reset account."
+          );
+          toast.error(
+            "Cannot decrypt messages - logged in from different device. Messages encrypted with keys from original device."
+          );
+          // Don't generate new keys - this would break existing encrypted messages!
+        } else {
+          console.log("✅ Using existing local keys");
         }
 
         toast.success("Welcome back with quantum-safe encryption!");
@@ -87,7 +135,15 @@ const Auth = () => {
         // SIGN UP
         console.log("📝 Attempting sign up...");
         console.log("Email:", email);
-        console.log("Username:", username || email.split("@")[0]);
+
+        // ✅ Sanitize username: chỉ cho phép a-z, 0-9, _, -
+        const sanitizedUsername = (username || email.split("@")[0])
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, "_") // Thay ký tự không hợp lệ bằng _
+          .replace(/^_+|_+$/g, "") // Bỏ _ ở đầu/cuối
+          .substring(0, 50); // Giới hạn độ dài
+
+        console.log("Sanitized username:", sanitizedUsername);
 
         // Generate keys FIRST
         console.log("🔑 Generating hybrid keys...");
@@ -101,7 +157,7 @@ const Auth = () => {
           password,
           options: {
             data: {
-              username: username || email.split("@")[0],
+              username: sanitizedUsername,
             },
             emailRedirectTo: `${window.location.origin}/`,
           },
@@ -144,7 +200,7 @@ const Auth = () => {
               .from("profiles")
               .insert({
                 id: data.user.id,
-                username: username || email.split("@")[0],
+                username: sanitizedUsername,
                 public_key: keys.classical.publicKey,
                 pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey),
               });
@@ -181,7 +237,8 @@ const Auth = () => {
       console.log("🎉 Authentication flow completed successfully");
       navigate("/");
     } catch (error: any) {
-      toast.error(error.message);
+      console.error("💥 Authentication error:", error);
+      toast.error(error.message || "Authentication failed");
     } finally {
       setLoading(false);
     }
@@ -215,7 +272,12 @@ const Auth = () => {
                   placeholder="john_doe"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
+                  pattern="[a-z0-9_-]+"
+                  title="Only lowercase letters, numbers, underscore, and hyphen allowed"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Only lowercase letters, numbers, _ and - allowed
+                </p>
               </div>
             )}
             <div className="space-y-2">

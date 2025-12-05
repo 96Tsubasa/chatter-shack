@@ -43,6 +43,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
   const [recipientPqcPublicKey, setRecipientPqcPublicKey] = useState<
     string | null
   >(null);
+  const [isSending, setIsSending] = useState(false); // ✅ Prevent spam
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // ✅ NEW: Local cache for own messages plaintext
@@ -50,6 +51,9 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
 
   useEffect(() => {
     if (!conversationId) return;
+
+    // ✅ Clear cache when switching conversations
+    ownMessagesCache.current.clear();
 
     loadMessages();
     loadRecipientPublicKey();
@@ -209,16 +213,38 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                 console.log("✅ Using cached plaintext for message:", msg.id);
                 decryptedMessage.decryptedContent = cachedPlaintext;
               } else {
-                // No cache - it's an old message from before this session
+                // No cache - try to decrypt forSender version
                 try {
                   const parsed = JSON.parse(msg.content);
-                  if (parsed.ciphertext) {
+
+                  if (parsed.forSender) {
+                    // ✅ NEW FORMAT: Decrypt forSender
+                    console.log("🔓 Decrypting own message from forSender...");
+                    const identityPrivateKey = getIdentityPrivateKey();
+                    const pqcPrivateKey = getPqcPrivateKey();
+
+                    if (identityPrivateKey && pqcPrivateKey) {
+                      const decrypted = await decryptMessage(
+                        parsed.forSender,
+                        parsed.forSender.ephemeralPublicKey,
+                        pqcPrivateKey
+                      );
+                      decryptedMessage.decryptedContent = decrypted;
+                      // Cache it for future renders
+                      ownMessagesCache.current.set(msg.id, decrypted);
+                      console.log("✅ Decrypted and cached own message");
+                    } else {
+                      decryptedMessage.decryptedContent = "[Missing keys]";
+                    }
+                  } else if (parsed.ciphertext) {
+                    // OLD FORMAT: Just encrypted for recipient
                     decryptedMessage.decryptedContent =
                       "[Your encrypted message]";
                   } else {
                     decryptedMessage.decryptedContent = msg.content;
                   }
-                } catch {
+                } catch (error) {
+                  console.error("❌ Error parsing own message:", error);
                   // Plain text message
                   decryptedMessage.decryptedContent = msg.content;
                 }
@@ -231,16 +257,16 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
 
                 if (identityPrivateKey && pqcPrivateKey) {
                   try {
-                    const encryptedData: HybridEncryptedMessage = JSON.parse(
-                      msg.content
-                    );
+                    const parsed = JSON.parse(msg.content);
+
+                    // ✅ Check for new format (forRecipient/forSender)
+                    const encryptedData = parsed.forRecipient || parsed;
 
                     console.log(
                       "🔓 Attempting to decrypt message from:",
                       msg.profiles?.username
                     );
 
-                    // Decrypt using OWN private keys
                     const decrypted = await decryptMessage(
                       encryptedData,
                       encryptedData.ephemeralPublicKey,
@@ -284,7 +310,18 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !conversationId) return;
+
+    // ✅ FIX BUG #1: Prevent spam sending
+    if (!newMessage.trim() || !conversationId || isSending) {
+      console.log("⏭️ Skipping send:", {
+        hasMessage: !!newMessage.trim(),
+        hasConversation: !!conversationId,
+        isSending,
+      });
+      return;
+    }
+
+    setIsSending(true); // Lock sending
 
     console.log("📤 Attempting to send message...");
     const plaintext = newMessage.trim();
@@ -294,80 +331,113 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     console.log("Has recipient classical key:", !!recipientPublicKey);
     console.log("Has recipient PQC key:", !!recipientPqcPublicKey);
 
-    let contentToSend = plaintext;
+    // ✅ Get own public keys for self-encryption
+    const { data: ownProfile } = await supabase
+      .from("profiles")
+      .select("public_key, pqc_public_key")
+      .eq("id", currentUserId)
+      .single();
 
-    if (recipientPublicKey && recipientPqcPublicKey) {
-      try {
-        console.log("🔐 Encrypting message with hybrid keys...");
-        const encrypted = await encryptMessage(
-          plaintext,
-          recipientPublicKey,
-          recipientPqcPublicKey
-        );
-        contentToSend = JSON.stringify(encrypted);
-        console.log("✅ Message encrypted successfully");
-      } catch (error) {
-        console.error("❌ Hybrid encryption error:", error);
-        toast.error("Failed to encrypt with quantum-safe keys");
-        return;
-      }
-    } else {
+    if (!ownProfile?.public_key || !ownProfile?.pqc_public_key) {
+      console.error("❌ Own public keys not found");
+      toast.error("Cannot encrypt message - missing own keys");
+      setIsSending(false);
+      return;
+    }
+
+    if (!recipientPublicKey || !recipientPqcPublicKey) {
       console.error("❌ Recipient's hybrid keys not available");
       toast.error("Recipient's hybrid keys not available");
+      setIsSending(false);
       return;
     }
 
-    console.log("💾 Inserting message into database...");
-    const { data, error } = await supabase
-      .from("messages")
-      .insert({
-        conversation_id: conversationId,
-        sender_id: currentUserId,
-        content: contentToSend,
-      })
-      .select();
+    try {
+      console.log("🔐 Encrypting message for recipient...");
+      const encryptedForRecipient = await encryptMessage(
+        plaintext,
+        recipientPublicKey,
+        recipientPqcPublicKey
+      );
+      console.log("✅ Encrypted for recipient");
 
-    if (error) {
-      console.error("❌ Failed to send message:", error);
-      console.error("Error details:", {
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
+      console.log("🔐 Encrypting message for yourself...");
+      const encryptedForSelf = await encryptMessage(
+        plaintext,
+        ownProfile.public_key,
+        ownProfile.pqc_public_key
+      );
+      console.log("✅ Encrypted for yourself");
+
+      // ✅ Store both encrypted versions
+      const contentToSend = JSON.stringify({
+        forRecipient: encryptedForRecipient,
+        forSender: encryptedForSelf,
       });
-      toast.error(`Failed to send message: ${error.message}`);
-      return;
+
+      console.log("💾 Inserting message into database...");
+      const { data, error } = await supabase
+        .from("messages")
+        .insert({
+          conversation_id: conversationId,
+          sender_id: currentUserId,
+          content: contentToSend,
+        })
+        .select();
+
+      if (error) {
+        console.error("❌ Failed to send message:", error);
+        console.error("Error details:", {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+        });
+        toast.error(`Failed to send message: ${error.message}`);
+        setIsSending(false);
+        return;
+      }
+
+      console.log("✅ Message sent successfully:", data);
+
+      // ✅ Optimistically add own message to UI with plaintext
+      if (data && data[0]) {
+        const messageId = data[0].id;
+
+        // ✅ Cache plaintext for this message
+        ownMessagesCache.current.set(messageId, plaintext);
+        console.log("💾 Cached plaintext for message:", messageId);
+
+        const newMsg: DecryptedMessage = {
+          id: messageId,
+          content: data[0].content,
+          sender_id: data[0].sender_id,
+          created_at: data[0].created_at,
+          profiles: {
+            username: "You",
+            public_key: undefined,
+            pqc_public_key: undefined,
+          },
+          decryptedContent: plaintext,
+        };
+
+        setMessages((prev) => {
+          const exists = prev.some((m) => m.id === newMsg.id);
+          if (exists) {
+            console.log("⚠️ Message already in list, skipping duplicate");
+            return prev;
+          }
+          return [...prev, newMsg];
+        });
+      }
+
+      setNewMessage("");
+    } catch (error) {
+      console.error("💥 Error sending message:", error);
+      toast.error("Failed to send message");
+    } finally {
+      setIsSending(false); // Unlock sending
     }
-
-    console.log("✅ Message sent successfully:", data);
-
-    // ✅ Optimistically add own message to UI with plaintext
-    if (data && data[0]) {
-      const newMsg: DecryptedMessage = {
-        id: data[0].id,
-        content: data[0].content,
-        sender_id: data[0].sender_id,
-        created_at: data[0].created_at,
-        profiles: {
-          username: "You",
-          public_key: undefined,
-          pqc_public_key: undefined,
-        },
-        decryptedContent: plaintext, // ← Show plaintext for own message
-      };
-
-      // Check if message already exists (shouldn't happen, but just in case)
-      setMessages((prev) => {
-        const exists = prev.some((m) => m.id === newMsg.id);
-        if (exists) {
-          console.log("⚠️ Message already in list, skipping duplicate");
-          return prev;
-        }
-        return [...prev, newMsg];
-      });
-    }
-
-    setNewMessage("");
   };
 
   if (!conversationId) {
@@ -431,7 +501,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
             placeholder="Type a quantum-safe message..."
             className="flex-1"
           />
-          <Button type="submit" size="icon">
+          <Button type="submit" size="icon" disabled={isSending}>
             <Send className="h-4 w-4" />
           </Button>
         </div>

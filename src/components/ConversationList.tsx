@@ -43,76 +43,97 @@ const ConversationList = ({
 
   useEffect(() => {
     loadConversations();
+
+    // ✅ FIX BUG #2: Subscribe to new conversations
+    const channel = supabase
+      .channel("conversation-changes")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "conversation_participants",
+          filter: `user_id=eq.${currentUserId}`,
+        },
+        (payload) => {
+          console.log("📨 New conversation participant added:", payload);
+          loadConversations();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [currentUserId]);
 
+  // ✅ FIXED: Sau khi có relationship trong types.ts, có thể dùng JOIN
   const loadConversations = async () => {
-    // Bước 1: Lấy tất cả cuộc trò chuyện mà mình tham gia
-    const { data: myParticipants, error: err1 } = await supabase
-      .from("conversation_participants")
-      .select("conversation_id")
-      .eq("user_id", currentUserId);
+    try {
+      // Step 1: Lấy conversation IDs của mình
+      const { data: myParticipants, error: err1 } = await supabase
+        .from("conversation_participants")
+        .select("conversation_id")
+        .eq("user_id", currentUserId);
 
-    if (err1 || !myParticipants || myParticipants.length === 0) {
-      setConversations([]);
-      return;
-    }
-
-    const conversationIds = myParticipants.map((p) => p.conversation_id);
-
-    // Bước 2: Lấy người còn lại trong từng cuộc trò chuyện (chỉ cần 1 query duy nhất)
-    const { data: otherParticipants, error: err2 } = await supabase
-      .from("conversation_participants")
-      .select(
-        `
-      conversation_id,
-      profiles (
-        id,
-        username,
-        avatar_url
-      )
-    `
-      )
-      .in("conversation_id", conversationIds)
-      .neq("user_id", currentUserId);
-
-    if (err2) {
-      console.error("Lỗi load người còn lại:", err2);
-      setConversations([]);
-      return;
-    }
-
-    // Bước 3: Tạo danh sách hiển thị – không còn lỗi TypeScript nào
-    const conversationsData: ConversationWithUser[] = myParticipants.map(
-      (p) => {
-        const participant = otherParticipants.find(
-          (x) => x.conversation_id === p.conversation_id
-        );
-
-        // participant.profiles luôn có kiểu đúng sau khi gen types mới
-        const profile = participant?.profiles as {
-          id: string;
-          username: string | null;
-          avatar_url: string | null;
-        };
-
-        return {
-          id: p.conversation_id,
-          otherUser: profile
-            ? {
-                id: profile.id,
-                username: profile.username || "Người dùng",
-                avatar_url: profile.avatar_url,
-              }
-            : {
-                id: "unknown",
-                username: "Đã xóa",
-                avatar_url: null,
-              },
-        };
+      if (err1 || !myParticipants || myParticipants.length === 0) {
+        setConversations([]);
+        return;
       }
-    );
 
-    setConversations(conversationsData);
+      const conversationIds = myParticipants.map((p) => p.conversation_id);
+
+      // Step 2: JOIN query với profiles (giờ đã có relationship)
+      const { data: otherParticipants, error: err2 } = await supabase
+        .from("conversation_participants")
+        .select(
+          `
+          conversation_id,
+          profiles!conversation_participants_user_id_fkey (
+            id,
+            username,
+            avatar_url
+          )
+        `
+        )
+        .in("conversation_id", conversationIds)
+        .neq("user_id", currentUserId);
+
+      if (err2) {
+        console.error("Error loading conversations:", err2);
+        setConversations([]);
+        return;
+      }
+
+      // Step 3: Map dữ liệu
+      const conversationsData: ConversationWithUser[] = myParticipants.map(
+        (p) => {
+          const participant = otherParticipants?.find(
+            (x) => x.conversation_id === p.conversation_id
+          );
+
+          // ✅ TypeScript giờ biết profiles có đúng type
+          const profile = participant?.profiles as {
+            id: string;
+            username: string | null;
+            avatar_url: string | null;
+          } | null;
+
+          return {
+            id: p.conversation_id,
+            otherUser: {
+              id: profile?.id || "unknown",
+              username: profile?.username || "Unknown User",
+            },
+          };
+        }
+      );
+
+      setConversations(conversationsData);
+    } catch (error) {
+      console.error("Unexpected error in loadConversations:", error);
+      setConversations([]);
+    }
   };
 
   const searchUsers = async () => {
@@ -129,7 +150,6 @@ const ConversationList = ({
   };
 
   const startConversation = async (userId: string) => {
-    // Basic guards
     if (!currentUserId) {
       toast.error("Not authenticated. Please sign in.");
       return;
@@ -146,8 +166,7 @@ const ConversationList = ({
         .select("conversation_id")
         .eq("user_id", currentUserId);
 
-      const conversationIds =
-        existingConv?.map((c: any) => c.conversation_id) || [];
+      const conversationIds = existingConv?.map((c) => c.conversation_id) || [];
 
       if (conversationIds.length > 0) {
         const { data: otherParticipants } = await supabase
@@ -195,16 +214,13 @@ const ConversationList = ({
         return;
       }
 
-      // Success
       await loadConversations();
       onSelectConversation(newConv.id);
       setOpen(false);
       toast.success("Conversation started!");
     } catch (err) {
       console.error("Unexpected error in startConversation:", err);
-      toast.error(
-        "Unexpected error starting conversation. Check console for details."
-      );
+      toast.error("Unexpected error starting conversation.");
     }
   };
 
@@ -241,7 +257,7 @@ const ConversationList = ({
                   >
                     <Avatar>
                       <AvatarFallback>
-                        {user.username[0].toUpperCase()}
+                        {user.username?.[0]?.toUpperCase() || "?"}
                       </AvatarFallback>
                     </Avatar>
                     <span className="font-medium">{user.username}</span>
@@ -274,7 +290,7 @@ const ConversationList = ({
             >
               <Avatar>
                 <AvatarFallback>
-                  {conv.otherUser.username[0].toUpperCase()}
+                  {conv.otherUser.username[0]?.toUpperCase() || "?"}
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 text-left">

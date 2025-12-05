@@ -10,12 +10,16 @@ import { clearAllKeys } from "@/lib/crypto";
 
 const Index = () => {
   const [user, setUser] = useState<any>(null);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<
+    string | null
+  >(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) {
         navigate("/auth");
       } else {
@@ -24,7 +28,9 @@ const Index = () => {
     };
     checkUser();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (!session) {
         navigate("/auth");
       } else {
@@ -36,7 +42,7 @@ const Index = () => {
   }, [navigate]);
 
   const handleSignOut = async () => {
-    clearAllKeys(); // Clear encryption keys for security
+    // clearAllKeys();
     await supabase.auth.signOut();
     toast.success("Signed out successfully");
   };
@@ -57,7 +63,10 @@ const Index = () => {
           selectedConversationId={selectedConversationId}
           onSelectConversation={setSelectedConversationId}
         />
-        <ChatWindow conversationId={selectedConversationId} currentUserId={user.id} />
+        <ChatWindow
+          conversationId={selectedConversationId}
+          currentUserId={user.id}
+        />
       </div>
     </div>
   );

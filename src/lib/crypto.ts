@@ -174,13 +174,16 @@ export async function encryptMessage(
 
 /**
  * Hybrid Decrypt: ML-KEM decapsulate + X25519 open
+ * Supports both old (box.after) and new (secretbox) formats
  */
 export async function decryptMessage(
   encryptedMessage: HybridEncryptedMessage,
   senderEphemeralPublicKey: string, // This parameter is NOT used (we use the one in encryptedMessage)
-  recipientPqcPrivateKey: Uint8Array
+  recipientPqcPrivateKey: Uint8Array,
+  useOldFormat: boolean = false // ✅ NEW: Backward compatibility flag
 ): Promise<string> {
   console.log("🔓 === DECRYPTION START ===");
+  console.log("Using old format (box.after):", useOldFormat);
   console.log("Encrypted message structure:", {
     hasCiphertext: !!encryptedMessage.ciphertext,
     hasNonce: !!encryptedMessage.nonce,
@@ -248,12 +251,30 @@ export async function decryptMessage(
     console.log("✅ Final hybrid key generated");
     console.log("First 8 bytes of final key:", Array.from(finalKey.slice(0, 8)));
 
-    // Step 4: Decrypt with secretbox.open (symmetric decryption)
-    console.log("🔓 Step 4: NaCl secretbox.open...");
-    const decrypted = nacl.secretbox.open(ciphertext, nonce, finalKey);
+    // Step 4: Decrypt (with backward compatibility)
+    let decrypted: Uint8Array | null;
+    
+    if (useOldFormat) {
+      // ⚠️ OLD FORMAT: Use box.open.after
+      console.log("🔓 Step 4: NaCl box.open.after (old format)...");
+      decrypted = nacl.box.open.after(ciphertext, nonce, finalKey);
+    } else {
+      // ✅ NEW FORMAT: Use secretbox.open
+      console.log("🔓 Step 4: NaCl secretbox.open (new format)...");
+      decrypted = nacl.secretbox.open(ciphertext, nonce, finalKey);
+      
+      // ✅ Auto-fallback to old format if new format fails
+      if (!decrypted) {
+        console.log("⚠️ New format failed, trying old format...");
+        decrypted = nacl.box.open.after(ciphertext, nonce, finalKey);
+        if (decrypted) {
+          console.log("✅ Successfully decrypted with old format!");
+        }
+      }
+    }
 
     if (!decrypted) {
-      console.error("❌ nacl.secretbox.open returned null");
+      console.error("❌ Decryption returned null (tried both formats)");
       console.error("This means the final key is incorrect");
       throw new Error('Decryption failed - invalid ciphertext or keys');
     }

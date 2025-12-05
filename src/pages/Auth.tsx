@@ -145,6 +145,29 @@ const Auth = () => {
 
         console.log("Sanitized username:", sanitizedUsername);
 
+        // ✅ FIX #1: Check if username already exists
+        const { data: existingProfile, error: checkError } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("username", sanitizedUsername)
+          .maybeSingle();
+
+        if (checkError) {
+          console.error("❌ Error checking username:", checkError);
+          throw new Error(`Failed to check username: ${checkError.message}`);
+        }
+
+        if (existingProfile) {
+          console.error("❌ Username already taken:", sanitizedUsername);
+          toast.error(
+            `Username "${sanitizedUsername}" is already taken. Please choose another.`
+          );
+          setLoading(false);
+          return;
+        }
+
+        console.log("✅ Username is available");
+
         // Generate keys FIRST
         console.log("🔑 Generating hybrid keys...");
         const keys = await generateHybridKeyPair();
@@ -207,6 +230,17 @@ const Auth = () => {
 
             if (insertError) {
               console.error("❌ Manual profile creation failed:", insertError);
+
+              // ✅ FIX #1b: Handle duplicate username constraint
+              if (
+                insertError.code === "23505" &&
+                insertError.message.includes("username")
+              ) {
+                throw new Error(
+                  `Username "${sanitizedUsername}" was just taken by another user. Please try again with a different username.`
+                );
+              }
+
               throw new Error(
                 `Failed to create profile: ${insertError.message}`
               );

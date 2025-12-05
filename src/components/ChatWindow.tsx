@@ -32,6 +32,7 @@ interface Message {
 
 interface DecryptedMessage extends Message {
   decryptedContent?: string;
+  isPending?: boolean; // ✅ FIX #2: Track pending messages
 }
 
 const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
@@ -43,10 +44,10 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
   const [recipientPqcPublicKey, setRecipientPqcPublicKey] = useState<
     string | null
   >(null);
-  const [isSending, setIsSending] = useState(false); // ✅ Prevent spam
+  const [isSending, setIsSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // ✅ NEW: Local cache for own messages plaintext
+  // ✅ Local cache for own messages plaintext
   const ownMessagesCache = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
@@ -77,7 +78,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
             loadMessages();
           } else {
             console.log(
-              "⏭️ Skipping reload (own message already added optimistically)"
+              "⭐ Skipping reload (own message already added optimistically)"
             );
           }
         }
@@ -186,18 +187,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         },
       }));
 
-      if (error) {
-        console.error("❌ Error loading messages:", error);
-        console.error("Error details:", {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-        });
-        toast.error(`Failed to load messages: ${error.message}`);
-        return;
-      }
-
       if (data) {
         const decryptedMessages = await Promise.all(
           data.map(async (msg: any) => {
@@ -224,15 +213,25 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                     const pqcPrivateKey = getPqcPrivateKey();
 
                     if (identityPrivateKey && pqcPrivateKey) {
-                      const decrypted = await decryptMessage(
-                        parsed.forSender,
-                        parsed.forSender.ephemeralPublicKey,
-                        pqcPrivateKey
-                      );
-                      decryptedMessage.decryptedContent = decrypted;
-                      // Cache it for future renders
-                      ownMessagesCache.current.set(msg.id, decrypted);
-                      console.log("✅ Decrypted and cached own message");
+                      try {
+                        const decrypted = await decryptMessage(
+                          parsed.forSender,
+                          parsed.forSender.ephemeralPublicKey,
+                          pqcPrivateKey,
+                          false // Try new format first
+                        );
+                        decryptedMessage.decryptedContent = decrypted;
+                        // Cache it for future renders
+                        ownMessagesCache.current.set(msg.id, decrypted);
+                        console.log("✅ Decrypted and cached own message");
+                      } catch (decryptError) {
+                        console.error(
+                          "❌ Failed to decrypt own message:",
+                          decryptError
+                        );
+                        decryptedMessage.decryptedContent =
+                          "[Decryption failed - keys may have changed]";
+                      }
                     } else {
                       decryptedMessage.decryptedContent = "[Missing keys]";
                     }
@@ -270,7 +269,8 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                     const decrypted = await decryptMessage(
                       encryptedData,
                       encryptedData.ephemeralPublicKey,
-                      pqcPrivateKey
+                      pqcPrivateKey,
+                      false // Try new format first (auto-fallback to old format in crypto.ts)
                     );
                     decryptedMessage.decryptedContent = decrypted;
                     console.log("✅ Decryption successful");
@@ -311,9 +311,9 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // ✅ FIX BUG #1: Prevent spam sending
+    // ✅ Prevent spam sending
     if (!newMessage.trim() || !conversationId || isSending) {
-      console.log("⏭️ Skipping send:", {
+      console.log("⭐ Skipping send:", {
         hasMessage: !!newMessage.trim(),
         hasConversation: !!conversationId,
         isSending,
@@ -321,15 +321,33 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
       return;
     }
 
-    setIsSending(true); // Lock sending
+    setIsSending(true);
 
     console.log("📤 Attempting to send message...");
     const plaintext = newMessage.trim();
-    console.log("Message text:", plaintext);
-    console.log("Conversation ID:", conversationId);
-    console.log("Current user ID:", currentUserId);
-    console.log("Has recipient classical key:", !!recipientPublicKey);
-    console.log("Has recipient PQC key:", !!recipientPqcPublicKey);
+
+    // ✅ FIX #2: Create temporary message ID for optimistic update
+    const tempId = `temp-${Date.now()}-${Math.random()}`;
+
+    // ✅ FIX #2: Add message to UI immediately (optimistic update)
+    const optimisticMessage: DecryptedMessage = {
+      id: tempId,
+      content: "", // Will be filled after encryption
+      sender_id: currentUserId,
+      created_at: new Date().toISOString(),
+      profiles: {
+        username: "You",
+        public_key: undefined,
+        pqc_public_key: undefined,
+      },
+      decryptedContent: plaintext,
+      isPending: true, // Mark as pending
+    };
+
+    setMessages((prev) => [...prev, optimisticMessage]);
+    setNewMessage(""); // Clear input immediately
+
+    console.log("✅ Optimistic message added to UI");
 
     // ✅ Get own public keys for self-encryption
     const { data: ownProfile } = await supabase
@@ -341,6 +359,8 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     if (!ownProfile?.public_key || !ownProfile?.pqc_public_key) {
       console.error("❌ Own public keys not found");
       toast.error("Cannot encrypt message - missing own keys");
+      // Remove optimistic message
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setIsSending(false);
       return;
     }
@@ -348,6 +368,8 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     if (!recipientPublicKey || !recipientPqcPublicKey) {
       console.error("❌ Recipient's hybrid keys not available");
       toast.error("Recipient's hybrid keys not available");
+      // Remove optimistic message
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setIsSending(false);
       return;
     }
@@ -394,13 +416,15 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
           hint: error.hint,
         });
         toast.error(`Failed to send message: ${error.message}`);
+        // Remove optimistic message
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
         setIsSending(false);
         return;
       }
 
       console.log("✅ Message sent successfully:", data);
 
-      // ✅ Optimistically add own message to UI with plaintext
+      // ✅ FIX #2: Replace temporary message with real one
       if (data && data[0]) {
         const messageId = data[0].id;
 
@@ -408,35 +432,28 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         ownMessagesCache.current.set(messageId, plaintext);
         console.log("💾 Cached plaintext for message:", messageId);
 
-        const newMsg: DecryptedMessage = {
-          id: messageId,
-          content: data[0].content,
-          sender_id: data[0].sender_id,
-          created_at: data[0].created_at,
-          profiles: {
-            username: "You",
-            public_key: undefined,
-            pqc_public_key: undefined,
-          },
-          decryptedContent: plaintext,
-        };
-
-        setMessages((prev) => {
-          const exists = prev.some((m) => m.id === newMsg.id);
-          if (exists) {
-            console.log("⚠️ Message already in list, skipping duplicate");
-            return prev;
-          }
-          return [...prev, newMsg];
-        });
+        // Update the temporary message with real ID
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? {
+                  ...m,
+                  id: messageId,
+                  content: data[0].content,
+                  created_at: data[0].created_at,
+                  isPending: false,
+                }
+              : m
+          )
+        );
       }
-
-      setNewMessage("");
     } catch (error) {
       console.error("💥 Error sending message:", error);
       toast.error("Failed to send message");
+      // Remove optimistic message
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
     } finally {
-      setIsSending(false); // Unlock sending
+      setIsSending(false);
     }
   };
 
@@ -470,7 +487,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                     isSent
                       ? "bg-message-sent text-message-sent-foreground rounded-br-sm"
                       : "bg-message-received text-message-received-foreground rounded-bl-sm"
-                  }`}
+                  } ${message.isPending ? "opacity-70" : ""}`}
                 >
                   <p className="break-words">
                     {message.decryptedContent || message.content}
@@ -482,10 +499,12 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                         : "text-message-received-foreground/70"
                     }`}
                   >
-                    {new Date(message.created_at).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {message.isPending
+                      ? "Sending..."
+                      : new Date(message.created_at).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                   </p>
                 </div>
               </div>
@@ -500,6 +519,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type a quantum-safe message..."
             className="flex-1"
+            disabled={isSending}
           />
           <Button type="submit" size="icon" disabled={isSending}>
             <Send className="h-4 w-4" />

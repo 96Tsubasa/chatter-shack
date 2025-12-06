@@ -12,7 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { toast } from "sonner";
-import { MessageSquare } from "lucide-react";
+import { Shield, Lock, Mail, User as UserIcon, Eye, EyeOff } from "lucide-react";
 import naclUtil from "tweetnacl-util";
 import {
   generateHybridKeyPair,
@@ -27,6 +27,7 @@ const Auth = () => {
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -57,47 +58,33 @@ const Auth = () => {
 
     try {
       if (isLogin) {
-        console.log("🔐 Attempting login...");
         const { error, data } = await supabase.auth.signInWithPassword({
           email,
           password,
         });
 
-        if (error) {
-          console.error("❌ Login error:", error);
-          throw error;
-        }
+        if (error) throw error;
 
-        console.log("✅ Login successful, checking keys...");
-
-        // ✅ CRITICAL FIX: Fetch keys from database first
         const { data: profileData, error: profileError } = await supabase
           .from("profiles")
           .select("public_key, pqc_public_key")
           .eq("id", data.user.id)
           .single();
 
-        if (profileError) {
-          console.error("❌ Error fetching profile:", profileError);
-          throw profileError;
-        }
+        if (profileError) throw profileError;
 
-        // Check local keys
         let classicalPriv = getIdentityPrivateKey();
         let pqcPriv = getPqcPrivateKey();
 
-        // ✅ NEW LOGIC: Only generate if BOTH local AND database are missing
         if (
           (!classicalPriv || !pqcPriv) &&
           (!profileData?.public_key || !profileData?.pqc_public_key)
         ) {
-          console.log("🔑 No keys found anywhere, generating new keys...");
           const keys = await generateHybridKeyPair();
           classicalPriv = keys.classical.privateKey;
           pqcPriv = keys.pqc.privateKey;
           storeHybridPrivateKeys(classicalPriv, pqcPriv);
 
-          console.log("📤 Uploading NEW public keys to profile...");
           const { error: updateError } = await supabase
             .from("profiles")
             .update({
@@ -106,46 +93,21 @@ const Auth = () => {
             })
             .eq("id", data.user.id);
 
-          if (updateError) {
-            console.error("❌ Error updating profile keys:", updateError);
-            throw updateError;
-          }
-          console.log("✅ Keys uploaded successfully");
+          if (updateError) throw updateError;
         } else if (!classicalPriv || !pqcPriv) {
-          // ❌ CRITICAL ERROR: Local keys missing but DB has keys
-          console.error(
-            "❌ CRITICAL: Keys exist in database but not in localStorage!"
-          );
-          console.error(
-            "This means you logged in from a different device/browser."
-          );
-          console.error(
-            "Cannot recover - you need to use the original device or reset account."
-          );
           toast.error(
             "Cannot decrypt messages - logged in from different device. Messages encrypted with keys from original device."
           );
-          // Don't generate new keys - this would break existing encrypted messages!
-        } else {
-          console.log("✅ Using existing local keys");
         }
 
-        toast.success("Welcome back with quantum-safe encryption!");
+        toast.success("Welcome back! Your connection is secured.");
       } else {
-        // SIGN UP
-        console.log("📝 Attempting sign up...");
-        console.log("Email:", email);
-
-        // ✅ Sanitize username: chỉ cho phép a-z, 0-9, _, -
         const sanitizedUsername = (username || email.split("@")[0])
           .toLowerCase()
-          .replace(/[^a-z0-9_-]/g, "_") // Thay ký tự không hợp lệ bằng _
-          .replace(/^_+|_+$/g, "") // Bỏ _ ở đầu/cuối
-          .substring(0, 50); // Giới hạn độ dài
+          .replace(/[^a-z0-9_-]/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .substring(0, 50);
 
-        console.log("Sanitized username:", sanitizedUsername);
-
-        // ✅ FIX #1: Check if username already exists
         const { data: existingProfile, error: checkError } = await supabase
           .from("profiles")
           .select("id")
@@ -153,12 +115,10 @@ const Auth = () => {
           .maybeSingle();
 
         if (checkError) {
-          console.error("❌ Error checking username:", checkError);
           throw new Error(`Failed to check username: ${checkError.message}`);
         }
 
         if (existingProfile) {
-          console.error("❌ Username already taken:", sanitizedUsername);
           toast.error(
             `Username "${sanitizedUsername}" is already taken. Please choose another.`
           );
@@ -166,15 +126,8 @@ const Auth = () => {
           return;
         }
 
-        console.log("✅ Username is available");
-
-        // Generate keys FIRST
-        console.log("🔑 Generating hybrid keys...");
         const keys = await generateHybridKeyPair();
-        console.log("✅ Keys generated successfully");
 
-        // Sign up
-        console.log("📤 Creating auth user...");
         const { error, data } = await supabase.auth.signUp({
           email,
           password,
@@ -186,26 +139,14 @@ const Auth = () => {
           },
         });
 
-        if (error) {
-          console.error("❌ Sign up error:", error);
-          throw error;
-        }
-
-        console.log("✅ Auth user created:", data.user?.id);
+        if (error) throw error;
 
         if (data.user) {
-          // Store private keys locally
-          console.log("💾 Storing private keys locally...");
           storeHybridPrivateKeys(
             keys.classical.privateKey,
             keys.pqc.privateKey
           );
-          console.log("✅ Private keys stored");
 
-          // Check if profile exists (trigger should auto-create it)
-          console.log("🔍 Checking if profile was auto-created...");
-
-          // Wait a bit for trigger to execute
           await new Promise((resolve) => setTimeout(resolve, 1000));
 
           const { data: existingProfile, error: checkError } = await supabase
@@ -215,10 +156,6 @@ const Auth = () => {
             .single();
 
           if (checkError) {
-            console.error("❌ Profile check error:", checkError);
-
-            // Try to create profile manually if trigger failed
-            console.log("🔧 Attempting manual profile creation...");
             const { error: insertError } = await supabase
               .from("profiles")
               .insert({
@@ -229,9 +166,6 @@ const Auth = () => {
               });
 
             if (insertError) {
-              console.error("❌ Manual profile creation failed:", insertError);
-
-              // ✅ FIX #1b: Handle duplicate username constraint
               if (
                 insertError.code === "23505" &&
                 insertError.message.includes("username")
@@ -245,10 +179,7 @@ const Auth = () => {
                 `Failed to create profile: ${insertError.message}`
               );
             }
-            console.log("✅ Profile created manually");
           } else {
-            console.log("✅ Profile exists, updating keys...");
-            // Profile exists, just update keys
             const { error: updateError } = await supabase
               .from("profiles")
               .update({
@@ -257,21 +188,15 @@ const Auth = () => {
               })
               .eq("id", data.user.id);
 
-            if (updateError) {
-              console.error("❌ Profile update error:", updateError);
-              throw updateError;
-            }
-            console.log("✅ Profile keys updated");
+            if (updateError) throw updateError;
           }
 
-          toast.success("Account created with Hybrid Post-Quantum E2EE!");
+          toast.success("Account created successfully! Your keys are secured.");
         }
       }
 
-      console.log("🎉 Authentication flow completed successfully");
       navigate("/");
     } catch (error: any) {
-      console.error("💥 Authentication error:", error);
       toast.error(error.message || "Authentication failed");
     } finally {
       setLoading(false);
@@ -279,28 +204,56 @@ const Auth = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1 text-center">
-          <div className="flex justify-center mb-4">
-            <div className="p-3 bg-primary rounded-full">
-              <MessageSquare className="w-8 h-8 text-primary-foreground" />
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-primary/5 to-accent/5 p-4 relative overflow-hidden">
+      {/* Animated background elements */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-accent/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
+      </div>
+
+      <Card className="w-full max-w-md relative backdrop-blur-xl bg-card/80 border-border/50 shadow-2xl">
+        <CardHeader className="space-y-3 text-center pb-8">
+          {/* Logo with animation */}
+          <div className="flex justify-center mb-2">
+            <div className="relative">
+              <div className="absolute inset-0 bg-gradient-to-r from-primary to-accent blur-xl opacity-50 rounded-full animate-pulse" />
+              <div className="relative p-4 bg-gradient-to-br from-primary via-primary to-accent rounded-2xl shadow-xl">
+                <Shield className="w-10 h-10 text-white" />
+              </div>
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold">
-            {isLogin ? "Welcome back" : "Create an account"}
+          
+          <CardTitle className="text-3xl font-bold bg-gradient-to-r from-primary via-primary to-accent bg-clip-text text-transparent">
+            {isLogin ? "Welcome Back" : "Create Account"}
           </CardTitle>
-          <CardDescription>
+          
+          <CardDescription className="text-base">
             {isLogin
-              ? "Sign in to continue messaging"
-              : "Sign up to start quantum-safe messaging"}
+              ? "Sign in to access your encrypted conversations"
+              : "Join SecureChat with quantum-resistant encryption"}
           </CardDescription>
+
+          {/* Security badges */}
+          <div className="flex items-center justify-center gap-2 pt-2">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 rounded-full text-xs font-medium text-primary">
+              <Lock className="w-3 h-3" />
+              <span>E2EE</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-accent/10 rounded-full text-xs font-medium text-accent">
+              <Shield className="w-3 h-3" />
+              <span>Post-Quantum</span>
+            </div>
+          </div>
         </CardHeader>
+
         <CardContent>
-          <form onSubmit={handleAuth} className="space-y-4">
+          <form onSubmit={handleAuth} className="space-y-5">
             {!isLogin && (
               <div className="space-y-2">
-                <Label htmlFor="username">Username</Label>
+                <Label htmlFor="username" className="text-sm font-medium flex items-center gap-2">
+                  <UserIcon className="w-4 h-4 text-primary" />
+                  Username
+                </Label>
                 <Input
                   id="username"
                   placeholder="john_doe"
@@ -308,14 +261,19 @@ const Auth = () => {
                   onChange={(e) => setUsername(e.target.value)}
                   pattern="[a-z0-9_-]+"
                   title="Only lowercase letters, numbers, underscore, and hyphen allowed"
+                  className="h-11"
                 />
                 <p className="text-xs text-muted-foreground">
                   Only lowercase letters, numbers, _ and - allowed
                 </p>
               </div>
             )}
+
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email" className="text-sm font-medium flex items-center gap-2">
+                <Mail className="w-4 h-4 text-primary" />
+                Email
+              </Label>
               <Input
                 id="email"
                 type="email"
@@ -323,34 +281,75 @@ const Auth = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                className="h-11"
               />
             </div>
+
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={6}
-              />
+              <Label htmlFor="password" className="text-sm font-medium flex items-center gap-2">
+                <Lock className="w-4 h-4 text-primary" />
+                Password
+              </Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  className="h-11 pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
             </div>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Loading..." : isLogin ? "Sign in" : "Sign up"}
+
+            <Button
+              type="submit"
+              className="w-full h-11 bg-gradient-to-r from-primary to-accent hover:shadow-xl transition-all duration-200 hover:scale-[1.02] text-white font-medium"
+              disabled={loading}
+            >
+              {loading ? (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Processing...</span>
+                </div>
+              ) : isLogin ? (
+                "Sign In"
+              ) : (
+                "Create Account"
+              )}
             </Button>
           </form>
-          <div className="mt-4 text-center text-sm">
+
+          <div className="mt-6 text-center">
             <button
               type="button"
               onClick={() => setIsLogin(!isLogin)}
-              className="text-primary hover:underline"
+              className="text-sm text-primary hover:text-accent transition-colors font-medium"
             >
               {isLogin
                 ? "Don't have an account? Sign up"
                 : "Already have an account? Sign in"}
             </button>
+          </div>
+
+          {/* Security info footer */}
+          <div className="mt-6 pt-6 border-t border-border/50">
+            <p className="text-xs text-center text-muted-foreground leading-relaxed">
+              Protected by ML-KEM-768 + X25519 hybrid encryption. Your private keys are stored locally and never transmitted.
+            </p>
           </div>
         </CardContent>
       </Card>

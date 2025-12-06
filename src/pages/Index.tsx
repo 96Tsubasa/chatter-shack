@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { LogOut, User, Settings } from "lucide-react";
+import { LogOut, User, Settings, Shield, Lock } from "lucide-react";
 import ConversationList from "@/components/ConversationList";
 import ChatWindow from "@/components/ChatWindow";
 import { toast } from "sonner";
@@ -129,13 +129,11 @@ const Index = () => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    // Validate file type
     if (!file.type.startsWith("image/")) {
       toast.error("Please upload an image file");
       return;
     }
 
-    // Validate file size (max 2MB)
     if (file.size > 2 * 1024 * 1024) {
       toast.error("Image size must be less than 2MB");
       return;
@@ -143,7 +141,6 @@ const Index = () => {
 
     setIsUploading(true);
     try {
-      // Delete old avatar if exists
       if (profile?.avatar_url && profile.avatar_url.includes("supabase")) {
         const oldPath = profile.avatar_url.split("/avatars/")[1];
         if (oldPath) {
@@ -151,7 +148,6 @@ const Index = () => {
         }
       }
 
-      // Upload new avatar
       const fileExt = file.name.split(".").pop();
       const fileName = `${user.id}/${Date.now()}.${fileExt}`;
 
@@ -168,7 +164,6 @@ const Index = () => {
         return;
       }
 
-      // Get public URL
       const {
         data: { publicUrl },
       } = supabase.storage.from("avatars").getPublicUrl(uploadData.path);
@@ -186,49 +181,88 @@ const Index = () => {
   if (!user) return null;
 
   return (
-    <div className="h-screen flex flex-col">
-      <header className="bg-card border-b border-border px-4 py-3 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-primary">ChatApp</h1>
+    <div className="h-screen flex flex-col bg-gradient-to-br from-background via-background to-primary/5">
+      {/* Enhanced Header with Gradient */}
+      <header className="relative bg-gradient-to-r from-primary/10 via-primary/5 to-accent/10 backdrop-blur-xl border-b border-border/50 px-6 py-4 shadow-lg">
+        <div className="absolute inset-0 bg-gradient-to-r from-primary/5 to-transparent opacity-50" />
+        
+        <div className="relative flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-gradient-to-br from-primary to-accent rounded-xl shadow-lg">
+              <Shield className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
+                SecureChat
+              </h1>
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                End-to-End Encrypted
+              </p>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-2">
-          {/* Profile Dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                className="flex items-center gap-2 h-auto py-2"
-              >
-                <Avatar className="h-8 w-8">
-                  <AvatarImage
-                    src={profile?.avatar_url}
-                    alt={profile?.username}
-                  />
-                  <AvatarFallback>
-                    {profile?.username?.[0]?.toUpperCase() || "U"}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="hidden md:inline-block font-medium">
-                  {profile?.username || "User"}
-                </span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel>My Account</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleOpenProfile}>
-                <Settings className="mr-2 h-4 w-4" />
-                <span>Edit Profile</span>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleSignOut}>
-                <LogOut className="mr-2 h-4 w-4" />
-                <span>Sign Out</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex items-center gap-3">
+            {/* Security Badge */}
+            <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-full border border-primary/20">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+              <span className="text-sm font-medium text-primary">
+                Post-Quantum Secure
+              </span>
+            </div>
+
+            {/* Profile Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="flex items-center gap-3 h-auto py-2 px-3 rounded-xl hover:bg-primary/10 transition-all duration-200"
+                >
+                  <Avatar className="h-10 w-10 ring-2 ring-primary/20 ring-offset-2 ring-offset-background">
+                    <AvatarImage
+                      src={profile?.avatar_url}
+                      alt={profile?.username}
+                    />
+                    <AvatarFallback className="bg-gradient-to-br from-primary to-accent text-white">
+                      {profile?.username?.[0]?.toUpperCase() || "U"}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="hidden md:block text-left">
+                    <p className="font-semibold text-sm">
+                      {profile?.username || "User"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">Online</p>
+                  </div>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64 p-2">
+                <DropdownMenuLabel className="font-normal">
+                  <div className="flex flex-col space-y-1">
+                    <p className="text-sm font-medium leading-none">
+                      {profile?.username || "User"}
+                    </p>
+                    <p className="text-xs leading-none text-muted-foreground">
+                      {user?.email}
+                    </p>
+                  </div>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleOpenProfile} className="cursor-pointer">
+                  <Settings className="mr-2 h-4 w-4" />
+                  <span>Edit Profile</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer text-destructive focus:text-destructive">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  <span>Sign Out</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </header>
 
+      {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden">
         <ConversationList
           currentUserId={user.id}
@@ -241,29 +275,37 @@ const Index = () => {
         />
       </div>
 
-      {/* Profile Edit Dialog */}
+      {/* Enhanced Profile Edit Dialog */}
       <Dialog open={profileDialogOpen} onOpenChange={setProfileDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>Edit Profile</DialogTitle>
+            <DialogTitle className="text-2xl">Edit Profile</DialogTitle>
             <DialogDescription>
-              Update your profile information here.
+              Customize your profile information and appearance.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
-            {/* Avatar Preview */}
-            <div className="flex flex-col items-center gap-2">
-              <Avatar className="h-24 w-24">
-                <AvatarImage src={editedAvatarUrl} alt={editedUsername} />
-                <AvatarFallback className="text-2xl">
-                  {editedUsername?.[0]?.toUpperCase() || "U"}
-                </AvatarFallback>
-              </Avatar>
+          
+          <div className="grid gap-6 py-4">
+            {/* Avatar Section */}
+            <div className="flex flex-col items-center gap-4">
+              <div className="relative group">
+                <Avatar className="h-32 w-32 ring-4 ring-primary/20 ring-offset-4 ring-offset-background transition-all duration-300 group-hover:ring-primary/40">
+                  <AvatarImage src={editedAvatarUrl} alt={editedUsername} />
+                  <AvatarFallback className="text-4xl bg-gradient-to-br from-primary to-accent text-white">
+                    {editedUsername?.[0]?.toUpperCase() || "U"}
+                  </AvatarFallback>
+                </Avatar>
+                
+                {/* Upload Overlay */}
+                <div className="absolute inset-0 bg-black/60 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
+                  <User className="w-8 h-8 text-white" />
+                </div>
+              </div>
 
               {/* Upload Button */}
               <Label htmlFor="avatar-upload" className="cursor-pointer">
-                <div className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors">
-                  {isUploading ? "Uploading..." : "Upload Photo"}
+                <div className="px-6 py-2.5 bg-gradient-to-r from-primary to-accent text-white rounded-lg text-sm font-medium hover:shadow-lg transition-all duration-200 hover:scale-105">
+                  {isUploading ? "Uploading..." : "Change Photo"}
                 </div>
                 <Input
                   id="avatar-upload"
@@ -274,31 +316,42 @@ const Index = () => {
                   className="hidden"
                 />
               </Label>
+              <p className="text-xs text-muted-foreground text-center">
+                Recommended: Square image, max 2MB
+              </p>
             </div>
 
-            {/* Username */}
-            <div className="grid gap-2">
-              <Label htmlFor="username">Username</Label>
+            {/* Username Field */}
+            <div className="grid gap-3">
+              <Label htmlFor="username" className="text-sm font-medium">
+                Username
+              </Label>
               <Input
                 id="username"
                 value={editedUsername}
                 onChange={(e) => setEditedUsername(e.target.value)}
                 placeholder="Enter username"
+                className="h-11"
               />
+              <p className="text-xs text-muted-foreground">
+                This is your display name visible to other users.
+              </p>
             </div>
           </div>
 
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-3 pt-4 border-t">
             <Button
               variant="outline"
               onClick={() => setProfileDialogOpen(false)}
               disabled={isSaving || isUploading}
+              className="px-6"
             >
               Cancel
             </Button>
             <Button
               onClick={handleSaveProfile}
               disabled={isSaving || isUploading}
+              className="px-6 bg-gradient-to-r from-primary to-accent hover:shadow-lg transition-all duration-200"
             >
               {isSaving ? "Saving..." : "Save Changes"}
             </Button>

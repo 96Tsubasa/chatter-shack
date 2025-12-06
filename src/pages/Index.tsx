@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { LogOut, User, Settings, Users } from "lucide-react";
+import { LogOut, Settings, Users, AlertCircle, Trash2 } from "lucide-react";
 import ConversationList from "@/components/ConversationList";
 import ChatWindow from "@/components/ChatWindow";
 import { toast } from "sonner";
@@ -25,6 +25,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listUsersWithKeys, hasUserKeys, clearUserKeys } from "@/lib/crypto";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 
 const Index = () => {
   const [user, setUser] = useState<any>(null);
@@ -39,6 +40,22 @@ const Index = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [savedAccounts, setSavedAccounts] = useState<string[]>([]);
+  const [removeKeyDialog, setRemoveKeyDialog] = useState<{
+    open: boolean;
+    userId: string | null;
+    isCurrentUser: boolean;
+  }>({
+    open: false,
+    userId: null,
+    isCurrentUser: false,
+  });
+  const [signOutDialog, setSignOutDialog] = useState<{
+    open: boolean;
+    keepKeys: boolean | null; // null = chưa chọn, true = giữ, false = xóa
+  }>({
+    open: false,
+    keepKeys: null,
+  });
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -92,44 +109,45 @@ const Index = () => {
     setSavedAccounts(accounts);
   };
 
+  const openSignOutDialog = () => {
+    setSignOutDialog({ open: true, keepKeys: null });
+  };
+
   const handleSignOut = async () => {
-    // ✅ Ask if user wants to keep keys
-    const keepKeys = window.confirm(
-      "Do you want to keep encryption keys on this device?\n\n" +
-        "• YES - You can decrypt old messages when you log in again on this device\n" +
-        "• NO - Keys will be deleted from this device AND server (others won't be able to send you messages until you log in again)"
-    );
+    openSignOutDialog();
+  };
+
+  const confirmSignOut = async () => {
+    const keepKeys = signOutDialog.keepKeys === true;
 
     if (!keepKeys && user) {
-      // Clear local keys
+      // Người dùng chọn KHÔNG giữ khóa → xóa local + server
       clearUserKeys(user.id);
 
-      // ✅ NEW: Clear public keys from database
-      try {
-        const { error } = await supabase
-          .from("profiles")
-          .update({
-            public_key: null,
-            pqc_public_key: null,
-          })
-          .eq("id", user.id);
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          public_key: null,
+          pqc_public_key: null,
+        })
+        .eq("id", user.id);
 
-        if (error) {
-          console.error("❌ Error clearing public keys from database:", error);
-          toast.error("Failed to clear keys from server");
-        } else {
-          console.log("✅ Public keys cleared from database");
-          toast.success(
-            "Signed out and cleared all encryption keys. You'll need to log in again to receive messages."
-          );
-        }
-      } catch (error) {
-        console.error("❌ Unexpected error:", error);
+      if (error) {
+        console.error("Lỗi xóa public key:", error);
+        toast.error("Không thể xóa khóa trên server");
+      } else {
+        toast.success("Đã đăng xuất và xóa toàn bộ khóa mã hóa");
       }
     } else {
-      toast.success("Signed out (keys kept for this device)");
+      toast.success(
+        "Đăng xuất thành công (khóa được giữ lại trên thiết bị này)"
+      );
     }
 
+    // Đóng dialog trước khi đăng xuất (tránh lỗi UI flash)
+    setSignOutDialog({ open: false, keepKeys: null });
+
+    // Thực hiện đăng xuất
     await supabase.auth.signOut();
   };
 
@@ -229,43 +247,41 @@ const Index = () => {
     }
   };
 
-  const handleRemoveAccount = async (userId: string) => {
-    const confirm = window.confirm(
-      "Are you sure you want to remove encryption keys for this account?\n\n" +
-        "⚠️ This will delete all local keys AND clear public keys from server.\n" +
-        "• Others won't be able to send you messages\n" +
-        "• Old messages from this account won't be decryptable\n" +
-        "• New keys will be generated automatically on next login"
-    );
+  const openRemoveKeyDialog = (userId: string) => {
+    setRemoveKeyDialog({
+      open: true,
+      userId,
+      isCurrentUser: userId === user?.id,
+    });
+  };
 
-    if (confirm) {
-      // Clear local keys
-      clearUserKeys(userId);
+  const confirmRemoveKeys = async () => {
+    if (!removeKeyDialog.userId) return;
 
-      // ✅ NEW: Try to clear public keys from database if we have permission
-      try {
-        const { error } = await supabase
-          .from("profiles")
-          .update({
-            public_key: null,
-            pqc_public_key: null,
-          })
-          .eq("id", userId);
+    const userIdToRemove = removeKeyDialog.userId;
 
-        if (error) {
-          console.error("❌ Error clearing public keys:", error);
-        } else {
-          console.log("✅ Public keys cleared from database");
-        }
-      } catch (error) {
-        console.error("❌ Unexpected error:", error);
-      }
+    // 1. Xóa local
+    clearUserKeys(userIdToRemove);
 
-      loadSavedAccounts();
-      toast.success(
-        "Account keys removed. New keys will be generated on next login."
-      );
+    // 2. Xóa public key trên server
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        public_key: null,
+        pqc_public_key: null,
+      })
+      .eq("id", userIdToRemove);
+
+    if (error) {
+      console.error("Lỗi xóa public key:", error);
+      toast.error("Không thể xóa khóa trên server");
+    } else {
+      toast.success("Đã xóa khóa mã hóa thành công");
     }
+
+    // Refresh danh sách
+    loadSavedAccounts();
+    setRemoveKeyDialog({ open: false, userId: null, isCurrentUser: false });
   };
 
   if (!user) return null;
@@ -449,7 +465,7 @@ const Index = () => {
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => handleRemoveAccount(userId)}
+                      onClick={() => openRemoveKeyDialog(userId)}
                     >
                       Remove Keys
                     </Button>
@@ -460,6 +476,177 @@ const Index = () => {
           </div>
           <div className="flex justify-end">
             <Button onClick={() => setAccountsDialogOpen(false)}>Close</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={removeKeyDialog.open}
+        onOpenChange={(open) =>
+          !open &&
+          setRemoveKeyDialog({
+            open: false,
+            userId: null,
+            isCurrentUser: false,
+          })
+        }
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertCircle className="h-5 w-5" />
+              Xóa khóa mã hóa
+            </DialogTitle>
+            <DialogDescription>
+              Hành động này <strong>không thể hoàn tác</strong>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Cảnh báo</AlertTitle>
+              <AlertDescription className="space-y-2 text-sm">
+                <p>
+                  • Tất cả tin nhắn cũ của tài khoản này sẽ{" "}
+                  <strong>không thể giải mã</strong>
+                </p>
+                <p>
+                  • Người khác sẽ <strong>không thể gửi tin nhắn</strong> cho
+                  tài khoản này
+                </p>
+                <p>• Khóa mới sẽ được tạo lại khi đăng nhập lần sau</p>
+              </AlertDescription>
+            </Alert>
+
+            <div className="text-sm text-muted-foreground">
+              Bạn đang xóa khóa của tài khoản:
+              <span className="font-mono font-bold ml-2">
+                {removeKeyDialog.userId?.substring(0, 12)}...
+              </span>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={() =>
+                setRemoveKeyDialog({
+                  open: false,
+                  userId: null,
+                  isCurrentUser: false,
+                })
+              }
+            >
+              Hủy
+            </Button>
+            <Button variant="destructive" onClick={confirmRemoveKeys}>
+              <Trash2 className="h-4 w-4 mr-2" />
+              Xóa khóa vĩnh viễn
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* Sign Out Confirmation Dialog */}
+      <Dialog
+        open={signOutDialog.open}
+        onOpenChange={(open) =>
+          !open && setSignOutDialog({ open: false, keepKeys: null })
+        }
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <LogOut className="h-5 w-5" />
+              Đăng xuất
+            </DialogTitle>
+            <DialogDescription>
+              Bạn có muốn giữ lại khóa mã hóa trên thiết bị này không?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-1 gap-3">
+              <button
+                onClick={() =>
+                  setSignOutDialog((prev) => ({ ...prev, keepKeys: true }))
+                }
+                className={`p-4 rounded-lg border-2 text-left transition-all ${
+                  signOutDialog.keepKeys === true
+                    ? "border-green-500 bg-green-50 dark:bg-green-950/30"
+                    : "border-border hover:border-green-400"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-green-100 dark:bg-green-900 flex items-center justify-center">
+                    Keep
+                  </div>
+                  <div>
+                    <p className="font-semibold text-green-700 dark:text-green-300">
+                      Giữ khóa
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Bạn vẫn có thể đọc lại tin nhắn cũ khi đăng nhập lại trên
+                      thiết bị này
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              <button
+                onClick={() =>
+                  setSignOutDialog((prev) => ({ ...prev, keepKeys: false }))
+                }
+                className={`p-4 rounded-lg border-2 text-left transition-all ${
+                  signOutDialog.keepKeys === false
+                    ? "border-red-500 bg-red-50 dark:bg-red-950/30"
+                    : "border-border hover:border-red-400"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900 flex items-center justify-center">
+                    Delete
+                  </div>
+                  <div>
+                    <p className="font-semibold text-red-700 dark:text-red-300">
+                      Xóa khóa
+                    </p>
+                    <p className="text-sm text-red-500 text-muted-foreground">
+                      Khóa sẽ bị xóa hoàn toàn. Bạn sẽ không thể đọc tin nhắn cũ
+                      nữa. Người khác không thể gửi tin nhắn cho bạn cho đến khi
+                      bạn đăng nhập lại.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            {signOutDialog.keepKeys !== null && (
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Bạn đã chọn:</AlertTitle>
+                <AlertDescription>
+                  {signOutDialog.keepKeys === true
+                    ? "Khóa mã hóa sẽ được giữ lại trên thiết bị này"
+                    : "Tất cả khóa mã hóa sẽ bị xóa vĩnh viễn khỏi thiết bị và server"}
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <Button
+              variant="outline"
+              onClick={() => setSignOutDialog({ open: false, keepKeys: null })}
+            >
+              Hủy
+            </Button>
+            <Button
+              variant="default"
+              disabled={signOutDialog.keepKeys === null}
+              onClick={confirmSignOut}
+            >
+              Đăng xuất
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

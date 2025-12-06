@@ -3,8 +3,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, MessageSquare } from "lucide-react";
+import { Send, MessageSquare, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   encryptMessage,
   decryptMessage,
@@ -44,6 +45,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
   const [recipientPqcPublicKey, setRecipientPqcPublicKey] = useState<
     string | null
   >(null);
+  const [recipientProfile, setRecipientProfile] = useState<any>(null); // ✅ NEW: Store recipient profile info
   const [isSending, setIsSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -78,6 +80,20 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
               "⭐ Skipping reload (own message already added optimistically)"
             );
           }
+        }
+      )
+      // ✅ NEW: Listen for profile updates (when recipient generates new keys)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "profiles",
+        },
+        (payload) => {
+          console.log("🔑 Profile updated:", payload);
+          // Reload recipient keys to check if they now have keys
+          loadRecipientPublicKey();
         }
       )
       .subscribe();
@@ -255,8 +271,8 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                     decryptedMessage.decryptedContent = decrypted;
                     console.log("✅ Decryption successful");
                   } catch (parseError) {
-                    console.warn("⚠️ Could not parse as encrypted");
-                    decryptedMessage.decryptedContent = "[Decryption failed]";
+                    console.warn("⚠️ Cannot decrypt message");
+                    decryptedMessage.decryptedContent = "[❌ Cannot decrypt]";
                   }
                 } else {
                   console.error("❌ Missing own keys for decryption");
@@ -423,6 +439,10 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     );
   }
 
+  // ✅ NEW: Check if recipient has encryption keys
+  const recipientHasKeys = !!(recipientPublicKey && recipientPqcPublicKey);
+  const recipientName = recipientProfile?.username || "User";
+
   return (
     <div className="flex-1 flex flex-col bg-background">
       <ScrollArea className="flex-1 p-4" ref={scrollRef}>
@@ -464,20 +484,57 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
           })}
         </div>
       </ScrollArea>
-      <form onSubmit={sendMessage} className="p-4 border-t border-border">
-        <div className="flex gap-2">
-          <Input
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            placeholder="Type a quantum-safe message..."
-            className="flex-1"
-            disabled={isSending}
-          />
-          <Button type="submit" size="icon" disabled={isSending}>
-            <Send className="h-4 w-4" />
-          </Button>
+
+      {/* ✅ NEW: Beautiful conditional UI based on recipient's key status */}
+      {recipientHasKeys ? (
+        <form onSubmit={sendMessage} className="p-4 border-t border-border">
+          <div className="flex gap-2">
+            <Input
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              placeholder="Type a quantum-safe message..."
+              className="flex-1"
+              disabled={isSending}
+            />
+            <Button type="submit" size="icon" disabled={isSending}>
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="p-4 border-t border-border">
+          <Alert className="border-amber-500 bg-amber-50 dark:bg-amber-950/30">
+            <AlertDescription className="text-amber-700 dark:text-amber-300">
+              <div className="flex items-start gap-3">
+                <MessageSquare className="h-5 w-5 mt-0.5 flex-shrink-0 text-amber-600" />
+                <div className="flex-1 space-y-2">
+                  <p className="font-medium text-amber-800 dark:text-amber-200">
+                    <strong>{recipientName}</strong> chưa tạo khóa bảo mật
+                  </p>
+                  <p className="text-sm">
+                    Bạn tạm thời không thể trò chuyện với người dùng này. Họ cần
+                    đăng nhập lại để tạo khóa mã hóa mới.
+                  </p>
+                  <div className="flex items-center gap-2 pt-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={loadRecipientPublicKey}
+                      className="h-8 text-xs border-amber-300 hover:bg-amber-100 dark:border-amber-700 dark:hover:bg-amber-900"
+                    >
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      Kiểm tra lại
+                    </Button>
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      💡 Khóa sẽ tự động cập nhật khi người dùng đăng nhập
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </AlertDescription>
+          </Alert>
         </div>
-      </form>
+      )}
     </div>
   );
 };

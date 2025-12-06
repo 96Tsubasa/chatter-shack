@@ -90,7 +90,6 @@ const Index = () => {
   const loadSavedAccounts = () => {
     const accounts = listUsersWithKeys();
     setSavedAccounts(accounts);
-    console.log("📋 Saved accounts:", accounts);
   };
 
   const handleSignOut = async () => {
@@ -98,14 +97,35 @@ const Index = () => {
     const keepKeys = window.confirm(
       "Do you want to keep encryption keys on this device?\n\n" +
         "• YES - You can decrypt old messages when you log in again on this device\n" +
-        "• NO - Keys will be deleted (new keys will be generated on next login, old messages won't be readable)"
+        "• NO - Keys will be deleted from this device AND server (others won't be able to send you messages until you log in again)"
     );
 
     if (!keepKeys && user) {
+      // Clear local keys
       clearUserKeys(user.id);
-      toast.success(
-        "Signed out and cleared encryption keys. New keys will be generated on next login."
-      );
+
+      // ✅ NEW: Clear public keys from database
+      try {
+        const { error } = await supabase
+          .from("profiles")
+          .update({
+            public_key: null,
+            pqc_public_key: null,
+          })
+          .eq("id", user.id);
+
+        if (error) {
+          console.error("❌ Error clearing public keys from database:", error);
+          toast.error("Failed to clear keys from server");
+        } else {
+          console.log("✅ Public keys cleared from database");
+          toast.success(
+            "Signed out and cleared all encryption keys. You'll need to log in again to receive messages."
+          );
+        }
+      } catch (error) {
+        console.error("❌ Unexpected error:", error);
+      }
     } else {
       toast.success("Signed out (keys kept for this device)");
     }
@@ -212,14 +232,35 @@ const Index = () => {
   const handleRemoveAccount = async (userId: string) => {
     const confirm = window.confirm(
       "Are you sure you want to remove encryption keys for this account?\n\n" +
-        "⚠️ This will delete all local keys.\n" +
-        "• Old messages from this account on this device won't be decryptable\n" +
-        "• New keys will be generated automatically on next login\n" +
-        "• You can continue using the account normally with new keys"
+        "⚠️ This will delete all local keys AND clear public keys from server.\n" +
+        "• Others won't be able to send you messages\n" +
+        "• Old messages from this account won't be decryptable\n" +
+        "• New keys will be generated automatically on next login"
     );
 
     if (confirm) {
+      // Clear local keys
       clearUserKeys(userId);
+
+      // ✅ NEW: Try to clear public keys from database if we have permission
+      try {
+        const { error } = await supabase
+          .from("profiles")
+          .update({
+            public_key: null,
+            pqc_public_key: null,
+          })
+          .eq("id", userId);
+
+        if (error) {
+          console.error("❌ Error clearing public keys:", error);
+        } else {
+          console.log("✅ Public keys cleared from database");
+        }
+      } catch (error) {
+        console.error("❌ Unexpected error:", error);
+      }
+
       loadSavedAccounts();
       toast.success(
         "Account keys removed. New keys will be generated on next login."

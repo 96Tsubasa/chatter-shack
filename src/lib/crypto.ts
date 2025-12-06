@@ -294,11 +294,12 @@ export async function decryptMessage(
 
 /**
  * ✅ NEW: Clear all keys for specific user on logout
+ * NOTE: This only clears LOCAL keys. Call clearUserKeysFromDatabase() to also clear DB keys.
  */
 export function clearUserKeys(userId: string): void {
   localStorage.removeItem(getIdentityPrivateKeyName(userId));
   localStorage.removeItem(getPqcIdentityPrivateKeyName(userId));
-  console.log(`✅ Cleared keys for user: ${userId}`);
+  console.log(`✅ Cleared local keys for user: ${userId}`);
 }
 
 /**

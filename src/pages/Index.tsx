@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { LogOut, User, Settings } from "lucide-react";
+import { LogOut, User, Settings, Users } from "lucide-react";
 import ConversationList from "@/components/ConversationList";
 import ChatWindow from "@/components/ChatWindow";
 import { toast } from "sonner";
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { listUsersWithKeys, hasUserKeys, clearUserKeys } from "@/lib/crypto";
 
 const Index = () => {
   const [user, setUser] = useState<any>(null);
@@ -32,10 +33,12 @@ const Index = () => {
     string | null
   >(null);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const [accountsDialogOpen, setAccountsDialogOpen] = useState(false);
   const [editedUsername, setEditedUsername] = useState("");
   const [editedAvatarUrl, setEditedAvatarUrl] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [savedAccounts, setSavedAccounts] = useState<string[]>([]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -48,6 +51,7 @@ const Index = () => {
       } else {
         setUser(session.user);
         loadProfile(session.user.id);
+        loadSavedAccounts();
       }
     };
     checkUser();
@@ -60,6 +64,7 @@ const Index = () => {
       } else {
         setUser(session.user);
         loadProfile(session.user.id);
+        loadSavedAccounts();
       }
     });
 
@@ -82,15 +87,41 @@ const Index = () => {
     }
   };
 
+  const loadSavedAccounts = () => {
+    const accounts = listUsersWithKeys();
+    setSavedAccounts(accounts);
+    console.log("📋 Saved accounts:", accounts);
+  };
+
   const handleSignOut = async () => {
+    // ✅ Ask if user wants to keep keys
+    const keepKeys = window.confirm(
+      "Do you want to keep encryption keys on this device?\n\n" +
+        "• YES - You can decrypt old messages when you log in again on this device\n" +
+        "• NO - Keys will be deleted (new keys will be generated on next login, old messages won't be readable)"
+    );
+
+    if (!keepKeys && user) {
+      clearUserKeys(user.id);
+      toast.success(
+        "Signed out and cleared encryption keys. New keys will be generated on next login."
+      );
+    } else {
+      toast.success("Signed out (keys kept for this device)");
+    }
+
     await supabase.auth.signOut();
-    toast.success("Signed out successfully");
   };
 
   const handleOpenProfile = () => {
     setEditedUsername(profile?.username || "");
     setEditedAvatarUrl(profile?.avatar_url || "");
     setProfileDialogOpen(true);
+  };
+
+  const handleOpenAccounts = () => {
+    loadSavedAccounts();
+    setAccountsDialogOpen(true);
   };
 
   const handleSaveProfile = async () => {
@@ -129,13 +160,11 @@ const Index = () => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    // Validate file type
     if (!file.type.startsWith("image/")) {
       toast.error("Please upload an image file");
       return;
     }
 
-    // Validate file size (max 2MB)
     if (file.size > 2 * 1024 * 1024) {
       toast.error("Image size must be less than 2MB");
       return;
@@ -143,7 +172,6 @@ const Index = () => {
 
     setIsUploading(true);
     try {
-      // Delete old avatar if exists
       if (profile?.avatar_url && profile.avatar_url.includes("supabase")) {
         const oldPath = profile.avatar_url.split("/avatars/")[1];
         if (oldPath) {
@@ -151,7 +179,6 @@ const Index = () => {
         }
       }
 
-      // Upload new avatar
       const fileExt = file.name.split(".").pop();
       const fileName = `${user.id}/${Date.now()}.${fileExt}`;
 
@@ -168,7 +195,6 @@ const Index = () => {
         return;
       }
 
-      // Get public URL
       const {
         data: { publicUrl },
       } = supabase.storage.from("avatars").getPublicUrl(uploadData.path);
@@ -183,6 +209,24 @@ const Index = () => {
     }
   };
 
+  const handleRemoveAccount = async (userId: string) => {
+    const confirm = window.confirm(
+      "Are you sure you want to remove encryption keys for this account?\n\n" +
+        "⚠️ This will delete all local keys.\n" +
+        "• Old messages from this account on this device won't be decryptable\n" +
+        "• New keys will be generated automatically on next login\n" +
+        "• You can continue using the account normally with new keys"
+    );
+
+    if (confirm) {
+      clearUserKeys(userId);
+      loadSavedAccounts();
+      toast.success(
+        "Account keys removed. New keys will be generated on next login."
+      );
+    }
+  };
+
   if (!user) return null;
 
   return (
@@ -191,6 +235,19 @@ const Index = () => {
         <h1 className="text-xl font-bold text-primary">ChatApp</h1>
 
         <div className="flex items-center gap-2">
+          {/* ✅ NEW: Show saved accounts indicator */}
+          {savedAccounts.length > 1 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleOpenAccounts}
+              className="text-xs"
+            >
+              <Users className="h-4 w-4 mr-1" />
+              {savedAccounts.length} accounts
+            </Button>
+          )}
+
           {/* Profile Dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -219,6 +276,12 @@ const Index = () => {
                 <Settings className="mr-2 h-4 w-4" />
                 <span>Edit Profile</span>
               </DropdownMenuItem>
+              {savedAccounts.length > 1 && (
+                <DropdownMenuItem onClick={handleOpenAccounts}>
+                  <Users className="mr-2 h-4 w-4" />
+                  <span>Manage Accounts ({savedAccounts.length})</span>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleSignOut}>
                 <LogOut className="mr-2 h-4 w-4" />
@@ -251,7 +314,6 @@ const Index = () => {
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
-            {/* Avatar Preview */}
             <div className="flex flex-col items-center gap-2">
               <Avatar className="h-24 w-24">
                 <AvatarImage src={editedAvatarUrl} alt={editedUsername} />
@@ -260,7 +322,6 @@ const Index = () => {
                 </AvatarFallback>
               </Avatar>
 
-              {/* Upload Button */}
               <Label htmlFor="avatar-upload" className="cursor-pointer">
                 <div className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors">
                   {isUploading ? "Uploading..." : "Upload Photo"}
@@ -276,7 +337,6 @@ const Index = () => {
               </Label>
             </div>
 
-            {/* Username */}
             <div className="grid gap-2">
               <Label htmlFor="username">Username</Label>
               <Input
@@ -302,6 +362,63 @@ const Index = () => {
             >
               {isSaving ? "Saving..." : "Save Changes"}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ✅ NEW: Accounts Management Dialog */}
+      <Dialog open={accountsDialogOpen} onOpenChange={setAccountsDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Saved Accounts on This Device</DialogTitle>
+            <DialogDescription>
+              Accounts with encryption keys stored locally. You can decrypt
+              messages from these accounts on this device.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-4 max-h-96 overflow-y-auto">
+            {savedAccounts.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                No saved accounts found
+              </p>
+            ) : (
+              savedAccounts.map((userId) => (
+                <div
+                  key={userId}
+                  className="flex items-center justify-between p-3 border rounded-lg"
+                >
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarFallback>
+                        {userId.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <p className="text-sm font-medium">
+                        {userId === user?.id
+                          ? "Current Account"
+                          : "Saved Account"}
+                      </p>
+                      <p className="text-xs text-muted-foreground font-mono">
+                        {userId.substring(0, 8)}...
+                      </p>
+                    </div>
+                  </div>
+                  {userId !== user?.id && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleRemoveAccount(userId)}
+                    >
+                      Remove Keys
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={() => setAccountsDialogOpen(false)}>Close</Button>
           </div>
         </DialogContent>
       </Dialog>

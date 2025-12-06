@@ -1,12 +1,11 @@
-// crypto.ts - FIXED with secretbox instead of box.after
+// crypto.ts - FIXED with multi-user support
 import nacl from 'tweetnacl';
 import naclUtil from 'tweetnacl-util';
 import { MlKem768 } from 'mlkem';
 
-// ⚠️ LƯU Ý: Vẫn dùng localStorage (không ideal nhưng cần cho POC)
-// Production nên dùng secure enclave hoặc hardware security module
-const IDENTITY_PRIVATE_KEY = 'identity_private_key';
-const PQC_IDENTITY_PRIVATE_KEY = 'pqc_identity_private_key';
+// ✅ NEW: Multi-user storage keys with userId prefix
+const getIdentityPrivateKeyName = (userId: string) => `identity_private_key_${userId}`;
+const getPqcIdentityPrivateKeyName = (userId: string) => `pqc_identity_private_key_${userId}`;
 const EPHEMERAL_KEYS_PREFIX = 'ephemeral_key_';
 
 export interface KeyPair {
@@ -42,12 +41,17 @@ export async function generateHybridKeyPair() {
 }
 
 /**
- * Store hybrid private keys in localStorage
+ * ✅ NEW: Store hybrid private keys in localStorage with userId
  */
-export function storeHybridPrivateKeys(classicalPrivateKey: string, pqcPrivateKey: Uint8Array): void {
+export function storeHybridPrivateKeys(
+  userId: string,
+  classicalPrivateKey: string,
+  pqcPrivateKey: Uint8Array
+): void {
   try {
-    localStorage.setItem(IDENTITY_PRIVATE_KEY, classicalPrivateKey);
-    localStorage.setItem(PQC_IDENTITY_PRIVATE_KEY, naclUtil.encodeBase64(pqcPrivateKey));
+    localStorage.setItem(getIdentityPrivateKeyName(userId), classicalPrivateKey);
+    localStorage.setItem(getPqcIdentityPrivateKeyName(userId), naclUtil.encodeBase64(pqcPrivateKey));
+    console.log(`✅ Stored keys for user: ${userId}`);
   } catch (e) {
     console.error('Failed to store private keys:', e);
     throw new Error('Storage failed - localStorage might be full or disabled');
@@ -55,17 +59,17 @@ export function storeHybridPrivateKeys(classicalPrivateKey: string, pqcPrivateKe
 }
 
 /**
- * Retrieve classical identity private key
+ * ✅ NEW: Retrieve classical identity private key for specific user
  */
-export function getIdentityPrivateKey(): string | null {
-  return localStorage.getItem(IDENTITY_PRIVATE_KEY);
+export function getIdentityPrivateKey(userId: string): string | null {
+  return localStorage.getItem(getIdentityPrivateKeyName(userId));
 }
 
 /**
- * Retrieve PQC identity private key
+ * ✅ NEW: Retrieve PQC identity private key for specific user
  */
-export function getPqcPrivateKey(): Uint8Array | null {
-  const stored = localStorage.getItem(PQC_IDENTITY_PRIVATE_KEY);
+export function getPqcPrivateKey(userId: string): Uint8Array | null {
+  const stored = localStorage.getItem(getPqcIdentityPrivateKeyName(userId));
   if (!stored) return null;
   
   try {
@@ -125,13 +129,13 @@ export async function encryptMessage(
     });
 
     // Step 1: ML-KEM-768 encapsulate
-    console.log("🔑 Step 1: ML-KEM encapsulation...");
+    console.log("🔒 Step 1: ML-KEM encapsulation...");
     const pqcInstance = new MlKem768();
     const [kemCapsule, sharedSecret] = await pqcInstance.encap(recipientPqcUint8);
     console.log("✅ ML-KEM shared secret:", sharedSecret.length, "bytes");
 
     // Step 2: X25519 ephemeral shared secret
-    console.log("🔑 Step 2: X25519 key exchange...");
+    console.log("🔒 Step 2: X25519 key exchange...");
     const ephemeralShared = nacl.box.before(recipientClassicalUint8, ephemeralKeyPair.secretKey);
     console.log("✅ X25519 shared secret:", ephemeralShared.length, "bytes");
 
@@ -173,16 +177,17 @@ export async function encryptMessage(
 }
 
 /**
- * Hybrid Decrypt: ML-KEM decapsulate + X25519 open
+ * ✅ UPDATED: Hybrid Decrypt with userId parameter
  * Supports both old (box.after) and new (secretbox) formats
  */
 export async function decryptMessage(
   encryptedMessage: HybridEncryptedMessage,
-  senderEphemeralPublicKey: string, // This parameter is NOT used (we use the one in encryptedMessage)
-  recipientPqcPrivateKey: Uint8Array,
-  useOldFormat: boolean = false // ✅ NEW: Backward compatibility flag
+  senderEphemeralPublicKey: string,
+  userId: string, // ✅ NEW: Need userId to get correct keys
+  useOldFormat: boolean = false
 ): Promise<string> {
   console.log("🔓 === DECRYPTION START ===");
+  console.log("User ID:", userId);
   console.log("Using old format (box.after):", useOldFormat);
   console.log("Encrypted message structure:", {
     hasCiphertext: !!encryptedMessage.ciphertext,
@@ -191,17 +196,18 @@ export async function decryptMessage(
     hasKemCapsule: !!encryptedMessage.kemCapsule
   });
 
-  // Validate inputs
-  const identityPrivKey = getIdentityPrivateKey();
+  // ✅ Get keys for specific user
+  const identityPrivKey = getIdentityPrivateKey(userId);
   if (!identityPrivKey) {
-    throw new Error('Identity private key not found');
+    throw new Error(`Identity private key not found for user: ${userId}`);
   }
-  console.log("✅ Identity private key found");
+  console.log("✅ Identity private key found for user");
 
+  const recipientPqcPrivateKey = getPqcPrivateKey(userId);
   if (!recipientPqcPrivateKey) {
-    throw new Error('PQC private key not found');
+    throw new Error(`PQC private key not found for user: ${userId}`);
   }
-  console.log("✅ PQC private key found");
+  console.log("✅ PQC private key found for user");
 
   try {
     const ciphertext = naclUtil.decodeBase64(encryptedMessage.ciphertext);
@@ -225,20 +231,16 @@ export async function decryptMessage(
     });
 
     // Step 1: ML-KEM decapsulate
-    console.log("🔑 Step 1: ML-KEM decapsulation...");
+    console.log("🔒 Step 1: ML-KEM decapsulation...");
     const pqcInstance = new MlKem768();
     const sharedSecret = await pqcInstance.decap(kemCapsuleUint8, recipientPqcPrivateKey);
     console.log("✅ ML-KEM shared secret:", sharedSecret.length, "bytes");
 
     // Step 2: X25519 ephemeral shared secret
-    // Must match encryption logic:
-    // Encryption: nacl.box.before(recipientPublic, ephemeralSecret)
-    // Decryption: nacl.box.before(ephemeralPublic, recipientSecret)
-    // These produce the SAME shared secret (Diffie-Hellman property)
-    console.log("🔑 Step 2: X25519 key exchange...");
+    console.log("🔒 Step 2: X25519 key exchange...");
     const ephemeralShared = nacl.box.before(
-      senderEphemeralUint8,    // ← Sender's ephemeral PUBLIC key
-      identityPrivKeyUint8     // ← Recipient's identity PRIVATE key
+      senderEphemeralUint8,
+      identityPrivKeyUint8
     );
     console.log("✅ X25519 shared secret:", ephemeralShared.length, "bytes");
 
@@ -291,17 +293,51 @@ export async function decryptMessage(
 }
 
 /**
- * Clear all keys on logout (security)
+ * ✅ NEW: Clear all keys for specific user on logout
+ */
+export function clearUserKeys(userId: string): void {
+  localStorage.removeItem(getIdentityPrivateKeyName(userId));
+  localStorage.removeItem(getPqcIdentityPrivateKeyName(userId));
+  console.log(`✅ Cleared keys for user: ${userId}`);
+}
+
+/**
+ * ✅ NEW: Clear ALL keys for ALL users (use with caution)
  */
 export function clearAllKeys(): void {
-  localStorage.removeItem(IDENTITY_PRIVATE_KEY);
-  localStorage.removeItem(PQC_IDENTITY_PRIVATE_KEY);
   const keys = Object.keys(localStorage);
   keys.forEach(key => {
-    if (key.startsWith(EPHEMERAL_KEYS_PREFIX)) {
+    if (key.startsWith('identity_private_key_') || 
+        key.startsWith('pqc_identity_private_key_') ||
+        key.startsWith(EPHEMERAL_KEYS_PREFIX)) {
       localStorage.removeItem(key);
     }
   });
+  console.log('✅ Cleared all encryption keys');
+}
+
+/**
+ * ✅ NEW: List all users with stored keys
+ */
+export function listUsersWithKeys(): string[] {
+  const keys = Object.keys(localStorage);
+  const userIds = new Set<string>();
+  
+  keys.forEach(key => {
+    if (key.startsWith('identity_private_key_')) {
+      const userId = key.replace('identity_private_key_', '');
+      userIds.add(userId);
+    }
+  });
+  
+  return Array.from(userIds);
+}
+
+/**
+ * ✅ NEW: Check if user has keys stored
+ */
+export function hasUserKeys(userId: string): boolean {
+  return !!(getIdentityPrivateKey(userId) && getPqcPrivateKey(userId));
 }
 
 /**

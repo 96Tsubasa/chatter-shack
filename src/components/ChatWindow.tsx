@@ -32,7 +32,7 @@ interface Message {
 
 interface DecryptedMessage extends Message {
   decryptedContent?: string;
-  isPending?: boolean; // ✅ FIX #2: Track pending messages
+  isPending?: boolean;
 }
 
 const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
@@ -53,9 +53,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
   useEffect(() => {
     if (!conversationId) return;
 
-    // ✅ Clear cache when switching conversations
     ownMessagesCache.current.clear();
-
     loadMessages();
     loadRecipientPublicKey();
 
@@ -72,7 +70,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         (payload) => {
           console.log("📨 New message received via realtime:", payload);
 
-          // ✅ Only reload if message is from OTHERS, not yourself
           if (payload.new && payload.new.sender_id !== currentUserId) {
             console.log("🔄 Reloading messages (from other user)");
             loadMessages();
@@ -88,7 +85,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversationId]);
+  }, [conversationId, currentUserId]);
 
   const loadRecipientPublicKey = async () => {
     if (!conversationId) return;
@@ -140,7 +137,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     console.log("📥 Loading messages for conversation:", conversationId);
 
     try {
-      // Query 1: Load messages without JOIN
       const { data: messagesData, error } = await supabase
         .from("messages")
         .select("id, content, sender_id, created_at")
@@ -149,12 +145,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
 
       if (error) {
         console.error("❌ Error loading messages:", error);
-        console.error("Error details:", {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-        });
         toast.error(`Failed to load messages: ${error.message}`);
         return;
       }
@@ -166,7 +156,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         return;
       }
 
-      // Query 2: Load sender profiles separately
       const senderIds = [...new Set(messagesData.map((m) => m.sender_id))];
       const { data: profilesData, error: profileError } = await supabase
         .from("profiles")
@@ -177,7 +166,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         console.error("❌ Error loading profiles:", profileError);
       }
 
-      // Query 3: Combine data
       const data = messagesData.map((msg) => ({
         ...msg,
         profiles: profilesData?.find((p) => p.id === msg.sender_id) || {
@@ -191,37 +179,33 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         const decryptedMessages = await Promise.all(
           data.map(async (msg: any) => {
             const decryptedMessage = { ...msg } as DecryptedMessage;
-
-            // Check if own message
             const isOwnMessage = msg.sender_id === currentUserId;
 
             if (isOwnMessage) {
-              // ✅ Check local cache first
               const cachedPlaintext = ownMessagesCache.current.get(msg.id);
               if (cachedPlaintext) {
                 console.log("✅ Using cached plaintext for message:", msg.id);
                 decryptedMessage.decryptedContent = cachedPlaintext;
               } else {
-                // No cache - try to decrypt forSender version
                 try {
                   const parsed = JSON.parse(msg.content);
 
                   if (parsed.forSender) {
-                    // ✅ NEW FORMAT: Decrypt forSender
                     console.log("🔓 Decrypting own message from forSender...");
-                    const identityPrivateKey = getIdentityPrivateKey();
-                    const pqcPrivateKey = getPqcPrivateKey();
+                    // ✅ Pass currentUserId to decryptMessage
+                    const identityPrivateKey =
+                      getIdentityPrivateKey(currentUserId);
+                    const pqcPrivateKey = getPqcPrivateKey(currentUserId);
 
                     if (identityPrivateKey && pqcPrivateKey) {
                       try {
                         const decrypted = await decryptMessage(
                           parsed.forSender,
                           parsed.forSender.ephemeralPublicKey,
-                          pqcPrivateKey,
-                          false // Try new format first
+                          currentUserId, // ✅ Pass userId
+                          false
                         );
                         decryptedMessage.decryptedContent = decrypted;
-                        // Cache it for future renders
                         ownMessagesCache.current.set(msg.id, decrypted);
                         console.log("✅ Decrypted and cached own message");
                       } catch (decryptError) {
@@ -230,13 +214,12 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                           decryptError
                         );
                         decryptedMessage.decryptedContent =
-                          "[Decryption failed - keys may have changed]";
+                          "🔒 [Old message - encrypted with previous keys]";
                       }
                     } else {
                       decryptedMessage.decryptedContent = "[Missing keys]";
                     }
                   } else if (parsed.ciphertext) {
-                    // OLD FORMAT: Just encrypted for recipient
                     decryptedMessage.decryptedContent =
                       "[Your encrypted message]";
                   } else {
@@ -244,21 +227,18 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                   }
                 } catch (error) {
                   console.error("❌ Error parsing own message:", error);
-                  // Plain text message
                   decryptedMessage.decryptedContent = msg.content;
                 }
               }
             } else {
-              // ✅ Other's message: Decrypt it
               try {
-                const identityPrivateKey = getIdentityPrivateKey();
-                const pqcPrivateKey = getPqcPrivateKey();
+                // ✅ Pass currentUserId to get correct keys
+                const identityPrivateKey = getIdentityPrivateKey(currentUserId);
+                const pqcPrivateKey = getPqcPrivateKey(currentUserId);
 
                 if (identityPrivateKey && pqcPrivateKey) {
                   try {
                     const parsed = JSON.parse(msg.content);
-
-                    // ✅ Check for new format (forRecipient/forSender)
                     const encryptedData = parsed.forRecipient || parsed;
 
                     console.log(
@@ -269,16 +249,14 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                     const decrypted = await decryptMessage(
                       encryptedData,
                       encryptedData.ephemeralPublicKey,
-                      pqcPrivateKey,
-                      false // Try new format first (auto-fallback to old format in crypto.ts)
+                      currentUserId, // ✅ Pass userId
+                      false
                     );
                     decryptedMessage.decryptedContent = decrypted;
                     console.log("✅ Decryption successful");
                   } catch (parseError) {
-                    console.warn(
-                      "⚠️ Could not parse as encrypted, showing plaintext"
-                    );
-                    decryptedMessage.decryptedContent = msg.content;
+                    console.warn("⚠️ Could not parse as encrypted");
+                    decryptedMessage.decryptedContent = "[Decryption failed]";
                   }
                 } else {
                   console.error("❌ Missing own keys for decryption");
@@ -311,28 +289,18 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // ✅ Prevent spam sending
     if (!newMessage.trim() || !conversationId || isSending) {
-      console.log("⭐ Skipping send:", {
-        hasMessage: !!newMessage.trim(),
-        hasConversation: !!conversationId,
-        isSending,
-      });
       return;
     }
 
     setIsSending(true);
 
-    console.log("📤 Attempting to send message...");
     const plaintext = newMessage.trim();
-
-    // ✅ FIX #2: Create temporary message ID for optimistic update
     const tempId = `temp-${Date.now()}-${Math.random()}`;
 
-    // ✅ FIX #2: Add message to UI immediately (optimistic update)
     const optimisticMessage: DecryptedMessage = {
       id: tempId,
-      content: "", // Will be filled after encryption
+      content: "",
       sender_id: currentUserId,
       created_at: new Date().toISOString(),
       profiles: {
@@ -341,15 +309,14 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
         pqc_public_key: undefined,
       },
       decryptedContent: plaintext,
-      isPending: true, // Mark as pending
+      isPending: true,
     };
 
     setMessages((prev) => [...prev, optimisticMessage]);
-    setNewMessage(""); // Clear input immediately
+    setNewMessage("");
 
     console.log("✅ Optimistic message added to UI");
 
-    // ✅ Get own public keys for self-encryption
     const { data: ownProfile } = await supabase
       .from("profiles")
       .select("public_key, pqc_public_key")
@@ -359,7 +326,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     if (!ownProfile?.public_key || !ownProfile?.pqc_public_key) {
       console.error("❌ Own public keys not found");
       toast.error("Cannot encrypt message - missing own keys");
-      // Remove optimistic message
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setIsSending(false);
       return;
@@ -368,7 +334,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     if (!recipientPublicKey || !recipientPqcPublicKey) {
       console.error("❌ Recipient's hybrid keys not available");
       toast.error("Recipient's hybrid keys not available");
-      // Remove optimistic message
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setIsSending(false);
       return;
@@ -391,7 +356,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
       );
       console.log("✅ Encrypted for yourself");
 
-      // ✅ Store both encrypted versions
       const contentToSend = JSON.stringify({
         forRecipient: encryptedForRecipient,
         forSender: encryptedForSelf,
@@ -409,14 +373,7 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
 
       if (error) {
         console.error("❌ Failed to send message:", error);
-        console.error("Error details:", {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-        });
         toast.error(`Failed to send message: ${error.message}`);
-        // Remove optimistic message
         setMessages((prev) => prev.filter((m) => m.id !== tempId));
         setIsSending(false);
         return;
@@ -424,15 +381,11 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
 
       console.log("✅ Message sent successfully:", data);
 
-      // ✅ FIX #2: Replace temporary message with real one
       if (data && data[0]) {
         const messageId = data[0].id;
-
-        // ✅ Cache plaintext for this message
         ownMessagesCache.current.set(messageId, plaintext);
         console.log("💾 Cached plaintext for message:", messageId);
 
-        // Update the temporary message with real ID
         setMessages((prev) =>
           prev.map((m) =>
             m.id === tempId
@@ -450,7 +403,6 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
     } catch (error) {
       console.error("💥 Error sending message:", error);
       toast.error("Failed to send message");
-      // Remove optimistic message
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
     } finally {
       setIsSending(false);

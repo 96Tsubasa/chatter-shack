@@ -59,7 +59,7 @@ const Auth = () => {
 
     try {
       if (isLogin) {
-        console.log("🔐 Attempting login...");
+        console.log("🔑 Attempting login...");
         const { error, data } = await supabase.auth.signInWithPassword({
           email,
           password,
@@ -73,11 +73,9 @@ const Auth = () => {
         const userId = data.user.id;
         console.log("✅ Login successful for user:", userId);
 
-        // ✅ Check if user has keys stored locally (FIXED: pass userId)
         const hasLocalKeys = hasUserKeys(userId);
         console.log("Has local keys:", hasLocalKeys);
 
-        // ✅ Fetch keys from database
         const { data: profileData, error: profileError } = await supabase
           .from("profiles")
           .select("public_key, pqc_public_key")
@@ -94,13 +92,10 @@ const Auth = () => {
         );
         console.log("Has database keys:", hasDbKeys);
 
-        // ✅ Handle different scenarios
         if (!hasLocalKeys && !hasDbKeys) {
-          // Scenario 1: New user, no keys anywhere - generate new keys
           console.log("🔑 No keys found anywhere, generating new keys...");
           const keys = await generateHybridKeyPair();
 
-          // ✅ FIXED: Pass userId as first parameter
           storeHybridPrivateKeys(
             userId,
             keys.classical.privateKey,
@@ -123,21 +118,16 @@ const Auth = () => {
           console.log("✅ Keys uploaded successfully");
           toast.success("Welcome! Quantum-safe encryption keys generated.");
         } else if (hasLocalKeys && !hasDbKeys) {
-          // Scenario 2: Has local keys but not in DB - upload to DB
           console.log("📤 Local keys found, uploading to database...");
 
-          // ✅ FIXED: Pass userId to get functions
           const classicalPriv = getIdentityPrivateKey(userId);
           const pqcPriv = getPqcPrivateKey(userId);
 
           if (classicalPriv && pqcPriv) {
-            // Derive public key from classical private key
             const classicalPrivUint8 = naclUtil.decodeBase64(classicalPriv);
             const classicalPubUint8 =
               nacl.box.keyPair.fromSecretKey(classicalPrivUint8).publicKey;
 
-            // ⚠️ Note: We cannot derive PQC public key from private key
-            // This scenario shouldn't happen in normal flow, but handle it gracefully
             console.warn("⚠️ Cannot derive PQC public key from private key");
             console.warn(
               "This account may have issues. Consider generating new keys."
@@ -147,7 +137,6 @@ const Auth = () => {
               .from("profiles")
               .update({
                 public_key: naclUtil.encodeBase64(classicalPubUint8),
-                // We'll need to regenerate PQC keys or skip this
               })
               .eq("id", userId);
 
@@ -159,13 +148,11 @@ const Auth = () => {
           }
           toast.success("Welcome back with quantum-safe encryption!");
         } else if (!hasLocalKeys && hasDbKeys) {
-          // Scenario 3: Keys in DB but not local - Generate new keys
           console.warn("⚠️ Keys exist in database but not locally!");
           console.log("🔑 Generating NEW keys for this device...");
 
           const keys = await generateHybridKeyPair();
 
-          // ✅ Store new private keys locally
           storeHybridPrivateKeys(
             userId,
             keys.classical.privateKey,
@@ -173,7 +160,6 @@ const Auth = () => {
           );
           console.log("✅ New private keys stored locally");
 
-          // ✅ Upload new public keys to database (overwrite old ones)
           const { error: updateError } = await supabase
             .from("profiles")
             .update({
@@ -192,9 +178,7 @@ const Auth = () => {
             "⚠️ New encryption keys generated. Old messages cannot be decrypted, but you can send new messages.",
             { duration: 8000 }
           );
-          // User can now send/receive new messages with new keys
         } else {
-          // Scenario 4: Has both local and DB keys - all good!
           console.log("✅ Using existing keys for user:", userId);
           toast.success("Welcome back with quantum-safe encryption!");
         }
@@ -203,20 +187,38 @@ const Auth = () => {
         console.log("📝 Attempting sign up...");
         console.log("Email:", email);
 
-        // ✅ Sanitize username
-        const sanitizedUsername = (username || email.split("@")[0])
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]/g, "_")
-          .replace(/^_+|_+$/g, "")
-          .substring(0, 50);
+        // ✅ REMOVED: Sanitization - Giữ nguyên username người dùng nhập
+        const finalUsername = username.trim() || email.split("@")[0];
 
-        console.log("Sanitized username:", sanitizedUsername);
+        // ✅ UPDATED: Validation - Chỉ kiểm tra độ dài và không cho phép khoảng trắng
+        if (finalUsername.length < 3) {
+          toast.error("Username must be at least 3 characters long");
+          setLoading(false);
+          return;
+        }
+
+        if (finalUsername.length > 50) {
+          toast.error("Username must be less than 50 characters");
+          setLoading(false);
+          return;
+        }
+
+        // ✅ Optional: Kiểm tra username không chứa ký tự đặc biệt nguy hiểm
+        // Nếu bạn muốn cho phép mọi ký tự, có thể bỏ đoạn này
+        const dangerousChars = /[<>\"'`]/;
+        if (dangerousChars.test(finalUsername)) {
+          toast.error("Username cannot contain < > \" ' ` characters");
+          setLoading(false);
+          return;
+        }
+
+        console.log("Final username:", finalUsername);
 
         // ✅ Check if username already exists
         const { data: existingProfile, error: checkError } = await supabase
           .from("profiles")
           .select("id")
-          .eq("username", sanitizedUsername)
+          .eq("username", finalUsername)
           .maybeSingle();
 
         if (checkError) {
@@ -225,9 +227,9 @@ const Auth = () => {
         }
 
         if (existingProfile) {
-          console.error("❌ Username already taken:", sanitizedUsername);
+          console.error("❌ Username already taken:", finalUsername);
           toast.error(
-            `Username "${sanitizedUsername}" is already taken. Please choose another.`
+            `Username "${finalUsername}" is already taken. Please choose another.`
           );
           setLoading(false);
           return;
@@ -247,7 +249,7 @@ const Auth = () => {
           password,
           options: {
             data: {
-              username: sanitizedUsername,
+              username: finalUsername,
             },
             emailRedirectTo: `${window.location.origin}/`,
           },
@@ -263,7 +265,6 @@ const Auth = () => {
         if (data.user) {
           const userId = data.user.id;
 
-          // ✅ FIXED: Store private keys locally WITH userId as first parameter
           console.log("💾 Storing private keys locally for user:", userId);
           storeHybridPrivateKeys(
             userId,
@@ -290,7 +291,7 @@ const Auth = () => {
               .from("profiles")
               .insert({
                 id: userId,
-                username: sanitizedUsername,
+                username: finalUsername,
                 public_key: keys.classical.publicKey,
                 pqc_public_key: naclUtil.encodeBase64(keys.pqc.publicKey),
               });
@@ -298,13 +299,12 @@ const Auth = () => {
             if (insertError) {
               console.error("❌ Manual profile creation failed:", insertError);
 
-              // ✅ Handle duplicate username constraint
               if (
                 insertError.code === "23505" &&
                 insertError.message.includes("username")
               ) {
                 throw new Error(
-                  `Username "${sanitizedUsername}" was just taken. Please try again.`
+                  `Username "${finalUsername}" was just taken. Please try again.`
                 );
               }
 
@@ -369,14 +369,16 @@ const Auth = () => {
                 <Label htmlFor="username">Username</Label>
                 <Input
                   id="username"
-                  placeholder="john_doe"
+                  placeholder="John Doe"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  pattern="[a-z0-9_-]+"
-                  title="Only lowercase letters, numbers, underscore, and hyphen allowed"
+                  minLength={3}
+                  maxLength={50}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Only lowercase letters, numbers, _ and - allowed
+                  ✅ You can use any characters (uppercase, lowercase, spaces,
+                  numbers, etc.)
+                  <br />❌ Cannot contain: &lt; &gt; " ' `
                 </p>
               </div>
             )}

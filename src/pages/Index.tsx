@@ -27,6 +27,13 @@ import { Label } from "@/components/ui/label";
 import { listUsersWithKeys, hasUserKeys, clearUserKeys } from "@/lib/crypto";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 
+// ✅ NEW: Interface for saved account with profile info
+interface SavedAccount {
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+}
+
 const Index = () => {
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
@@ -39,19 +46,21 @@ const Index = () => {
   const [editedAvatarUrl, setEditedAvatarUrl] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [savedAccounts, setSavedAccounts] = useState<string[]>([]);
+  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]); // ✅ Updated type
   const [removeKeyDialog, setRemoveKeyDialog] = useState<{
     open: boolean;
     userId: string | null;
+    username: string | null; // ✅ NEW: Store username for better UX
     isCurrentUser: boolean;
   }>({
     open: false,
     userId: null,
+    username: null,
     isCurrentUser: false,
   });
   const [signOutDialog, setSignOutDialog] = useState<{
     open: boolean;
-    keepKeys: boolean | null; // null = chưa chọn, true = giữ, false = xóa
+    keepKeys: boolean | null;
   }>({
     open: false,
     keepKeys: null,
@@ -104,9 +113,50 @@ const Index = () => {
     }
   };
 
-  const loadSavedAccounts = () => {
-    const accounts = listUsersWithKeys();
-    setSavedAccounts(accounts);
+  // ✅ UPDATED: Load saved accounts with profile information
+  const loadSavedAccounts = async () => {
+    const userIds = listUsersWithKeys();
+
+    if (userIds.length === 0) {
+      setSavedAccounts([]);
+      return;
+    }
+
+    try {
+      // Fetch profile data for all saved user IDs
+      const { data: profiles, error } = await supabase
+        .from("profiles")
+        .select("id, username, avatar_url")
+        .in("id", userIds);
+
+      if (error) {
+        console.error("Error loading profiles for saved accounts:", error);
+        // Fallback to showing userId if profile fetch fails
+        setSavedAccounts(
+          userIds.map((userId) => ({
+            userId,
+            username: userId.substring(0, 8) + "...",
+            avatarUrl: null,
+          }))
+        );
+        return;
+      }
+
+      // Map profiles to saved accounts
+      const accountsWithProfiles = userIds.map((userId) => {
+        const profile = profiles?.find((p) => p.id === userId);
+        return {
+          userId,
+          username: profile?.username || `User ${userId.substring(0, 8)}`,
+          avatarUrl: profile?.avatar_url || null,
+        };
+      });
+
+      setSavedAccounts(accountsWithProfiles);
+    } catch (error) {
+      console.error("Unexpected error loading saved accounts:", error);
+      setSavedAccounts([]);
+    }
   };
 
   const openSignOutDialog = () => {
@@ -121,7 +171,6 @@ const Index = () => {
     const keepKeys = signOutDialog.keepKeys === true;
 
     if (!keepKeys && user) {
-      // Người dùng chọn KHÔNG giữ khóa → xóa local + server
       clearUserKeys(user.id);
 
       const { error } = await supabase
@@ -144,10 +193,7 @@ const Index = () => {
       );
     }
 
-    // Đóng dialog trước khi đăng xuất (tránh lỗi UI flash)
     setSignOutDialog({ open: false, keepKeys: null });
-
-    // Thực hiện đăng xuất
     await supabase.auth.signOut();
   };
 
@@ -158,7 +204,7 @@ const Index = () => {
   };
 
   const handleOpenAccounts = () => {
-    loadSavedAccounts();
+    loadSavedAccounts(); // Refresh accounts when opening dialog
     setAccountsDialogOpen(true);
   };
 
@@ -185,6 +231,8 @@ const Index = () => {
           avatar_url: editedAvatarUrl,
         });
         setProfileDialogOpen(false);
+        // Refresh saved accounts to update current user's display
+        loadSavedAccounts();
       }
     } catch (error) {
       console.error("Unexpected error:", error);
@@ -247,10 +295,11 @@ const Index = () => {
     }
   };
 
-  const openRemoveKeyDialog = (userId: string) => {
+  const openRemoveKeyDialog = (userId: string, username: string) => {
     setRemoveKeyDialog({
       open: true,
       userId,
+      username, // ✅ Store username for display
       isCurrentUser: userId === user?.id,
     });
   };
@@ -260,10 +309,8 @@ const Index = () => {
 
     const userIdToRemove = removeKeyDialog.userId;
 
-    // 1. Xóa local
     clearUserKeys(userIdToRemove);
 
-    // 2. Xóa public key trên server
     const { error } = await supabase
       .from("profiles")
       .update({
@@ -279,9 +326,13 @@ const Index = () => {
       toast.success("Đã xóa khóa mã hóa thành công");
     }
 
-    // Refresh danh sách
     loadSavedAccounts();
-    setRemoveKeyDialog({ open: false, userId: null, isCurrentUser: false });
+    setRemoveKeyDialog({
+      open: false,
+      userId: null,
+      username: null,
+      isCurrentUser: false,
+    });
   };
 
   if (!user) return null;
@@ -292,7 +343,6 @@ const Index = () => {
         <h1 className="text-xl font-bold text-primary">ChatApp</h1>
 
         <div className="flex items-center gap-2">
-          {/* ✅ NEW: Show saved accounts indicator */}
           {savedAccounts.length > 1 && (
             <Button
               variant="ghost"
@@ -305,7 +355,6 @@ const Index = () => {
             </Button>
           )}
 
-          {/* Profile Dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -423,7 +472,7 @@ const Index = () => {
         </DialogContent>
       </Dialog>
 
-      {/* ✅ NEW: Accounts Management Dialog */}
+      {/* ✅ UPDATED: Accounts Management Dialog with Profile Display */}
       <Dialog open={accountsDialogOpen} onOpenChange={setAccountsDialogOpen}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
@@ -439,35 +488,45 @@ const Index = () => {
                 No saved accounts found
               </p>
             ) : (
-              savedAccounts.map((userId) => (
+              savedAccounts.map((account) => (
                 <div
-                  key={userId}
-                  className="flex items-center justify-between p-3 border rounded-lg"
+                  key={account.userId}
+                  className="flex items-center justify-between p-3 border rounded-lg hover:bg-secondary/50 transition-colors"
                 >
                   <div className="flex items-center gap-3">
                     <Avatar className="h-10 w-10">
+                      <AvatarImage
+                        src={account.avatarUrl || undefined}
+                        alt={account.username}
+                      />
                       <AvatarFallback>
-                        {userId.substring(0, 2).toUpperCase()}
+                        {account.username[0]?.toUpperCase() || "?"}
                       </AvatarFallback>
                     </Avatar>
                     <div>
                       <p className="text-sm font-medium">
-                        {userId === user?.id
-                          ? "Current Account"
-                          : "Saved Account"}
+                        {account.username}
+                        {account.userId === user?.id && (
+                          <span className="ml-2 text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950 px-2 py-0.5 rounded-full">
+                            Current
+                          </span>
+                        )}
                       </p>
                       <p className="text-xs text-muted-foreground font-mono">
-                        {userId.substring(0, 8)}...
+                        ID: {account.userId.substring(0, 12)}...
                       </p>
                     </div>
                   </div>
-                  {userId !== user?.id && (
+                  {account.userId !== user?.id && (
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => openRemoveKeyDialog(userId)}
+                      onClick={() =>
+                        openRemoveKeyDialog(account.userId, account.username)
+                      }
                     >
-                      Remove Keys
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      Remove
                     </Button>
                   )}
                 </div>
@@ -479,6 +538,8 @@ const Index = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ✅ UPDATED: Remove Key Dialog with Username */}
       <Dialog
         open={removeKeyDialog.open}
         onOpenChange={(open) =>
@@ -486,6 +547,7 @@ const Index = () => {
           setRemoveKeyDialog({
             open: false,
             userId: null,
+            username: null,
             isCurrentUser: false,
           })
         }
@@ -520,9 +582,14 @@ const Index = () => {
 
             <div className="text-sm text-muted-foreground">
               Bạn đang xóa khóa của tài khoản:
-              <span className="font-mono font-bold ml-2">
-                {removeKeyDialog.userId?.substring(0, 12)}...
-              </span>
+              <div className="mt-2 p-3 bg-secondary rounded-lg">
+                <p className="font-semibold text-foreground">
+                  {removeKeyDialog.username || "Unknown User"}
+                </p>
+                <p className="text-xs font-mono text-muted-foreground mt-1">
+                  {removeKeyDialog.userId?.substring(0, 12)}...
+                </p>
+              </div>
             </div>
           </div>
 
@@ -533,6 +600,7 @@ const Index = () => {
                 setRemoveKeyDialog({
                   open: false,
                   userId: null,
+                  username: null,
                   isCurrentUser: false,
                 })
               }
@@ -546,6 +614,7 @@ const Index = () => {
           </div>
         </DialogContent>
       </Dialog>
+
       {/* Sign Out Confirmation Dialog */}
       <Dialog
         open={signOutDialog.open}

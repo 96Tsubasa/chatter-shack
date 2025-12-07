@@ -374,6 +374,7 @@ const Auth = () => {
                   onChange={(e) => setUsername(e.target.value)}
                   minLength={3}
                   maxLength={50}
+                  autoComplete="off"
                 />
                 <p className="text-xs text-muted-foreground">
                   ✅ You can use any characters (uppercase, lowercase, spaces,
@@ -391,6 +392,7 @@ const Auth = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                autoComplete="off"
               />
             </div>
             <div className="space-y-2">
@@ -403,6 +405,7 @@ const Auth = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={6}
+                autoComplete="off"
               />
             </div>
             <Button type="submit" className="w-full" disabled={loading}>

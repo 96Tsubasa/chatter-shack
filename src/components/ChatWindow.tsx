@@ -230,20 +230,23 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                           decryptError
                         );
                         decryptedMessage.decryptedContent =
-                          "🔒 [Old message - encrypted with previous keys]";
+                          "🔒 [Cannot decrypt old messages]";
                       }
                     } else {
-                      decryptedMessage.decryptedContent = "[Missing keys]";
+                      decryptedMessage.decryptedContent =
+                        "🔒 [Cannot decrypt old messages]";
                     }
                   } else if (parsed.ciphertext) {
                     decryptedMessage.decryptedContent =
-                      "[Your encrypted message]";
+                      "🔒 [Cannot decrypt old messages]";
                   } else {
-                    decryptedMessage.decryptedContent = msg.content;
+                    decryptedMessage.decryptedContent =
+                      "🔒 [Cannot decrypt old messages]";
                   }
                 } catch (error) {
                   console.error("❌ Error parsing own message:", error);
-                  decryptedMessage.decryptedContent = msg.content;
+                  decryptedMessage.decryptedContent =
+                    "🔒 [Cannot decrypt old messages]";
                 }
               }
             } else {
@@ -272,16 +275,18 @@ const ChatWindow = ({ conversationId, currentUserId }: ChatWindowProps) => {
                     console.log("✅ Decryption successful");
                   } catch (parseError) {
                     console.warn("⚠️ Cannot decrypt message");
-                    decryptedMessage.decryptedContent = "[❌ Cannot decrypt]";
+                    decryptedMessage.decryptedContent =
+                      "🔒 [Cannot decrypt old messages]";
                   }
                 } else {
                   console.error("❌ Missing own keys for decryption");
                   decryptedMessage.decryptedContent =
-                    "[Missing keys - cannot decrypt]";
+                    "🔒 [Cannot decrypt old messages]";
                 }
               } catch (error) {
                 console.error("❌ Error decrypting message:", error);
-                decryptedMessage.decryptedContent = "[Decryption failed]";
+                decryptedMessage.decryptedContent =
+                  "🔒 [Cannot decrypt old messages]";
               }
             }
 

@@ -340,7 +340,7 @@ const Index = () => {
   return (
     <div className="h-screen flex flex-col">
       <header className="bg-card border-b border-border px-4 py-3 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-primary">ChatApp</h1>
+        <h1 className="text-xl font-bold text-primary">ChatAppPQC</h1>
 
         <div className="flex items-center gap-2">
           {savedAccounts.length > 1 && (
